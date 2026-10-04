@@ -18,9 +18,12 @@ public sealed class SettingsWindow : Window
     {
         _app = app;
         Title = "TimeHero — impostazioni";
-        Width = 420;
+        Width = 440;
         Height = 480;
-        Background = Ui.NoteBg;
+        Background = Ui.Bg;
+        Foreground = Ui.Fg;
+        FontFamily = Ui.Font;
+        SourceInitialized += (_, _) => Theme.DarkTitleBar(this);
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         var tabs = new TabControl { Margin = new Thickness(10) };
@@ -92,7 +95,7 @@ public sealed class SettingsWindow : Window
     private UIElement ListTab(Func<List<string>> load, Action<string> add, Action<string> remove,
         string removeLabel, string? hint)
     {
-        var list = new ListBox { Background = Ui.Panel, BorderBrush = Ui.NoteEdge };
+        var list = new ListBox { Background = Ui.Surface, BorderBrush = Ui.Border };
         var input = Ui.Input();
         void Reload() => list.ItemsSource = load();
         void Add()

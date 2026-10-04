@@ -16,9 +16,9 @@ public sealed class HistoryWindow : Window
     private readonly TrayApp _app;
     private TimeStore Store => _app.Store;
 
-    private readonly DatePicker _from = new() { SelectedDate = DateTime.Today };
-    private readonly DatePicker _to = new() { SelectedDate = DateTime.Today };
-    private readonly ComboBox _round = new() { Width = 100 };
+    private readonly DatePicker _from = new() { SelectedDate = DateTime.Today, Foreground = Ui.Fg, Margin = new Thickness(0, 2, 0, 0) };
+    private readonly DatePicker _to = new() { SelectedDate = DateTime.Today, Foreground = Ui.Fg, Margin = new Thickness(0, 2, 0, 0) };
+    private readonly ComboBox _round = new() { Width = 100, Margin = new Thickness(0, 2, 0, 0) };
     private readonly DataGrid _grid = new();
     private readonly ListBox _byClient = new();
     private readonly ListBox _byActivity = new();
@@ -36,7 +36,10 @@ public sealed class HistoryWindow : Window
         Title = "TimeHero — storico e timesheet";
         Width = 1240;
         Height = 720;
-        Background = Ui.NoteBg;
+        Background = Ui.Bg;
+        Foreground = Ui.Fg;
+        FontFamily = Ui.Font;
+        SourceInitialized += (_, _) => Theme.DarkTitleBar(this);
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         _round.ItemsSource = RoundOptions.Select(m => m == 0 ? "Nessuno" : $"{m} min").ToList();
@@ -108,8 +111,8 @@ public sealed class HistoryWindow : Window
     private static StackPanel Section(string title, ListBox list)
     {
         list.Height = 88;
-        list.Background = Ui.Panel;
-        list.BorderBrush = Ui.NoteEdge;
+        list.Background = Ui.Surface;
+        list.BorderBrush = Ui.Border;
         var p = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
         p.Children.Add(Ui.Text(title, 11, true, Ui.Subtle));
         p.Children.Add(list);
@@ -132,11 +135,39 @@ public sealed class HistoryWindow : Window
         _grid.AutoGenerateColumns = false;
         _grid.IsReadOnly = true;
         _grid.SelectionMode = DataGridSelectionMode.Single;
-        _grid.Background = Ui.Panel;
-        _grid.RowBackground = Ui.Panel;
-        _grid.AlternatingRowBackground = Ui.NoteBg;
-        _grid.GridLinesVisibility = DataGridGridLinesVisibility.Horizontal;
+        _grid.Background = Ui.Surface;
+        _grid.RowBackground = Ui.Surface;
+        _grid.AlternatingRowBackground = Ui.RowAlt;
+        _grid.Foreground = Ui.Fg;
+        _grid.BorderBrush = Ui.Border;
+        _grid.GridLinesVisibility = DataGridGridLinesVisibility.None;
         _grid.HeadersVisibility = DataGridHeadersVisibility.Column;
+        _grid.RowHeight = 28;
+
+        var header = new Style(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader));
+        header.Setters.Add(new Setter(Control.BackgroundProperty, Ui.Surface2));
+        header.Setters.Add(new Setter(Control.ForegroundProperty, Ui.Subtle));
+        header.Setters.Add(new Setter(Control.BorderBrushProperty, Ui.Border));
+        header.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0, 0, 0, 1)));
+        header.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(8, 6, 8, 6)));
+        header.Setters.Add(new Setter(Control.FontWeightProperty, FontWeights.SemiBold));
+        _grid.ColumnHeaderStyle = header;
+
+        var cell = new Style(typeof(DataGridCell));
+        cell.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
+        cell.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(8, 0, 8, 0)));
+        cell.Setters.Add(new Setter(Control.VerticalContentAlignmentProperty, VerticalAlignment.Center));
+        var cellSel = new Trigger { Property = DataGridCell.IsSelectedProperty, Value = true };
+        cellSel.Setters.Add(new Setter(Control.BackgroundProperty, Ui.AccentDim));
+        cellSel.Setters.Add(new Setter(Control.ForegroundProperty, Ui.Fg));
+        cell.Triggers.Add(cellSel);
+        _grid.CellStyle = cell;
+
+        var row = new Style(typeof(DataGridRow));
+        var rowSel = new Trigger { Property = DataGridRow.IsSelectedProperty, Value = true };
+        rowSel.Setters.Add(new Setter(Control.BackgroundProperty, Ui.AccentDim));
+        row.Triggers.Add(rowSel);
+        _grid.RowStyle = row;
         _grid.MouseDoubleClick += (_, _) => EditSelected();
 
         void Col(string header, string path, double width = double.NaN)

@@ -12,8 +12,6 @@ namespace TimeHero.App;
 /// <summary>Il "post-it": finestra senza bordi ancorata sopra la taskbar, in basso a destra.</summary>
 public sealed class FlyoutWindow : Window
 {
-    private static readonly Brush PausedTile = Ui.Hex("#F4978E");
-
     private readonly TrayApp _app;
     private TimeStore Store => _app.Store;
     private ActivityTracker Tracker => _app.Tracker;
@@ -21,7 +19,7 @@ public sealed class FlyoutWindow : Window
     // attività in corso
     private readonly TextBox _curTitle = new()
     {
-        FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Ui.Ink,
+        FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Ui.Fg,
         Background = Brushes.Transparent, BorderThickness = new Thickness(0),
         Padding = new Thickness(0, 0, 0, 2), ToolTip = "Titolo dell'attività (modificabile)",
     };
@@ -70,6 +68,8 @@ public sealed class FlyoutWindow : Window
         Width = 360;
         ShowActivated = true;
         Title = "TimeHero";
+        FontFamily = Ui.Font;
+        Foreground = Ui.Fg;
 
         _pause = Ui.Btn("⏸ Pausa", (_, _) => OnPause(), tooltip: "Metti in pausa: resta aperta e la ritrovi nei riquadri rossi");
         _finish = Ui.Btn("✔ Fine", (_, _) => OnFinish(), Ui.Go, "Chiudi definitivamente l'attività");
@@ -77,6 +77,7 @@ public sealed class FlyoutWindow : Window
         {
             Content = "📌",
             ToolTip = "Tieni aperto",
+            Foreground = Ui.Fg,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(6, 2, 6, 2),
@@ -133,10 +134,12 @@ public sealed class FlyoutWindow : Window
         // attività in corso
         var current = new Border
         {
-            Background = Ui.Panel,
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(10),
-            Margin = new Thickness(0, 4, 0, 6),
+            Background = Ui.Surface,
+            BorderBrush = Ui.Border,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 6, 0, 8),
         };
         var cp = new StackPanel();
         cp.Children.Add(_curTitle);
@@ -194,11 +197,11 @@ public sealed class FlyoutWindow : Window
         return new Border
         {
             Margin = new Thickness(10),
-            Background = Ui.NoteBg,
-            BorderBrush = Ui.NoteEdge,
+            Background = Ui.Bg,
+            BorderBrush = Ui.Border,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
-            Effect = new DropShadowEffect { BlurRadius = 14, ShadowDepth = 2, Opacity = 0.35 },
+            CornerRadius = new CornerRadius(14),
+            Effect = new DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Opacity = 0.55 },
             Child = root,
         };
     }
@@ -318,10 +321,10 @@ public sealed class FlyoutWindow : Window
         var total = a.Duration(DateTime.UtcNow);
         var since = a.StartUtc.ToLocalTime().Date < DateTime.Today ? $" · dal {a.StartUtc.ToLocalTime():dd/MM}" : "";
 
-        var title = Ui.Text(a.Title, 12.5, true);
+        var title = Ui.Text(a.Title, 12.5, true, Brushes.White);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
         title.TextWrapping = TextWrapping.NoWrap;
-        var meta = Ui.Text($"{cat} · {Reporting.FormatHm(total)}{since}", 10.5, fg: Ui.Ink);
+        var meta = Ui.Text($"{cat} · {Reporting.FormatHm(total)}{since}", 10.5, fg: Ui.Hex("#FFE4E1"));
         meta.TextTrimming = TextTrimming.CharacterEllipsis;
         meta.TextWrapping = TextWrapping.NoWrap;
 
@@ -331,8 +334,8 @@ public sealed class FlyoutWindow : Window
         info.MouseLeftButtonUp += (_, _) => Resume(a);
 
         var actions = new UniformGrid { Columns = 2, Margin = new Thickness(0, 4, 0, 0) };
-        actions.Children.Add(Ui.Btn("▶", (_, _) => Resume(a), Brushes.White, "Riprendi"));
-        actions.Children.Add(Ui.Btn("✔", (_, _) => Tracker.Finish(a.Id), Brushes.White, "Chiudi definitivamente"));
+        actions.Children.Add(Ui.Btn("▶", (_, _) => Resume(a), Ui.Hex("#33FFFFFF"), "Riprendi", Brushes.Transparent));
+        actions.Children.Add(Ui.Btn("✔", (_, _) => Tracker.Finish(a.Id), Ui.Hex("#33FFFFFF"), "Chiudi definitivamente", Brushes.Transparent));
 
         var body = new StackPanel();
         body.Children.Add(info);
@@ -340,11 +343,11 @@ public sealed class FlyoutWindow : Window
 
         return new Border
         {
-            Width = 157,
+            Width = 160,
             Margin = new Thickness(0, 0, 6, 6),
             Padding = new Thickness(8),
-            Background = PausedTile,
-            CornerRadius = new CornerRadius(8),
+            Background = Ui.Danger,
+            CornerRadius = new CornerRadius(10),
             ToolTip = a.Title,
             Child = body,
         };
@@ -356,18 +359,8 @@ public sealed class FlyoutWindow : Window
         foreach (var cat in cats)
         {
             var c = cat;
-            var btn = Ui.Btn(c.Name, (_, _) => StartNew(c), Ui.Hex(Blend(c.Color)));
-            btn.Margin = new Thickness(2);
-            _cats.Children.Add(btn);
+            _cats.Children.Add(Ui.CategoryBtn(c.Name, c.Color, (_, _) => StartNew(c)));
         }
-    }
-
-    /// <summary>Versione più tenue del colore della categoria.</summary>
-    private static string Blend(string hex)
-    {
-        var c = (Color)ColorConverter.ConvertFromString(hex);
-        byte Mix(byte v) => (byte)(v + (255 - v) * 0.55);
-        return $"#{Mix(c.R):X2}{Mix(c.G):X2}{Mix(c.B):X2}";
     }
 
     // ---------- azioni ----------

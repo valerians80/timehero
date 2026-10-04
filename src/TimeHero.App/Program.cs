@@ -11,6 +11,7 @@ public static class Program
         if (!isFirst) return; // già in esecuzione: l'icona è nella tray
 
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        Theme.Apply(app);
         app.DispatcherUnhandledException += (_, e) =>
         {
             MessageBox.Show(e.Exception.Message, "TimeHero — errore", MessageBoxButton.OK, MessageBoxImage.Error);

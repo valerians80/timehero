@@ -104,7 +104,13 @@ public sealed class TrayApp : IDisposable
 
     private System.Windows.Forms.ContextMenuStrip BuildMenu()
     {
-        var m = new System.Windows.Forms.ContextMenuStrip();
+        var m = new System.Windows.Forms.ContextMenuStrip
+        {
+            Renderer = new System.Windows.Forms.ToolStripProfessionalRenderer(new Theme.DarkMenuColors()),
+            BackColor = System.Drawing.Color.FromArgb(0x25, 0x27, 0x2E),
+            ForeColor = System.Drawing.Color.FromArgb(0xEC, 0xED, 0xEF),
+            ShowImageMargin = false,
+        };
         m.Items.Add("Apri TimeHero", null, (_, _) => ShowFlyout());
         m.Items.Add("Storico e timesheet", null, (_, _) => ShowHistory());
         m.Items.Add("Impostazioni", null, (_, _) => ShowSettings());

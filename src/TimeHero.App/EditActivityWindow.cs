@@ -24,7 +24,7 @@ public sealed class EditActivityWindow : Window
     private readonly TextBox _sessions = Ui.Input();
     private readonly CheckBox _billable = new() { Content = "Fatturabile", Margin = new Thickness(0, 8, 0, 0) };
     private readonly CheckBox _closed = new() { Content = "Attività chiusa", Margin = new Thickness(0, 4, 0, 0) };
-    private readonly ListBox _attachments = new() { MaxHeight = 90, Background = Ui.Panel };
+    private readonly ListBox _attachments = new() { MaxHeight = 90, Background = Ui.Surface };
     private readonly TextBlock _error = Ui.Text("", 11, fg: System.Windows.Media.Brushes.Firebrick);
 
     public bool Saved { get; private set; }
@@ -42,7 +42,10 @@ public sealed class EditActivityWindow : Window
         SizeToContent = SizeToContent.Height;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = Ui.NoteBg;
+        Background = Ui.Bg;
+        Foreground = Ui.Fg;
+        FontFamily = Ui.Font;
+        SourceInitialized += (_, _) => Theme.DarkTitleBar(this);
 
         var cats = store.GetCategories(true);
         _category.ItemsSource = cats;
