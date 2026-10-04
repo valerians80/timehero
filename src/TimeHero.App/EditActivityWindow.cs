@@ -1,26 +1,29 @@
-using System.IO;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using TimeHero.Core;
 
 namespace TimeHero.App;
 
-/// <summary>Modifica (o inserimento manuale) di un'attività.</summary>
+/// <summary>Modifica (o inserimento manuale) di un'attività e delle sue sessioni di lavoro.</summary>
 public sealed class EditActivityWindow : Window
 {
+    private static readonly Regex SessionLine = new(
+        @"^\s*(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*$", RegexOptions.Compiled);
+
     private readonly TimeStore _store;
     private readonly Activity _activity;
     private readonly bool _isNew;
 
-    private readonly DatePicker _date = new();
-    private readonly TextBox _start = Ui.Input();
-    private readonly TextBox _end = Ui.Input();
+    private readonly TextBox _title = Ui.Input();
     private readonly ComboBox _category = new();
     private readonly ComboBox _client = new() { IsEditable = true };
     private readonly TextBox _people = Ui.Input();
     private readonly TextBox _notes = Ui.Input();
-    private readonly CheckBox _billable = new() { Content = "Fatturabile", IsChecked = true, Margin = new Thickness(0, 8, 0, 0) };
+    private readonly TextBox _sessions = Ui.Input();
+    private readonly CheckBox _billable = new() { Content = "Fatturabile", Margin = new Thickness(0, 8, 0, 0) };
+    private readonly CheckBox _closed = new() { Content = "Attività chiusa", Margin = new Thickness(0, 4, 0, 0) };
     private readonly ListBox _attachments = new() { MaxHeight = 90, Background = Ui.Panel };
     private readonly TextBlock _error = Ui.Text("", 11, fg: System.Windows.Media.Brushes.Firebrick);
 
@@ -35,7 +38,7 @@ public sealed class EditActivityWindow : Window
             : new Activity { StartUtc = DateTime.UtcNow };
 
         Title = _isNew ? "Nuova attività" : "Modifica attività";
-        Width = 380;
+        Width = 420;
         SizeToContent = SizeToContent.Height;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -48,31 +51,48 @@ public sealed class EditActivityWindow : Window
         _client.ItemsSource = clients.Select(c => c.Name).ToList();
         var people = store.GetPeople();
 
-        var local = _activity.StartUtc.ToLocalTime();
-        _date.SelectedDate = _isNew ? (defaultDate ?? DateTime.Today) : local.Date;
-        _start.Text = _isNew ? DateTime.Now.AddHours(-1).ToString("HH:mm") : local.ToString("HH:mm");
-        _end.Text = _isNew ? DateTime.Now.ToString("HH:mm") : _activity.EndUtc?.ToLocalTime().ToString("HH:mm") ?? "";
+        _title.Text = _activity.Title;
         _category.SelectedItem = cats.FirstOrDefault(c => c.Id == _activity.CategoryId) ?? cats.FirstOrDefault();
         _client.Text = clients.FirstOrDefault(c => c.Id == _activity.ClientId)?.Name ?? "";
         _people.Text = string.Join(", ", _activity.PersonIds.Select(pid => people.FirstOrDefault(p => p.Id == pid)?.Name)
             .Where(n => n is not null));
         _notes.Text = _activity.Notes ?? "";
         _notes.AcceptsReturn = true;
-        _notes.Height = 56;
+        _notes.Height = 50;
         _notes.TextWrapping = TextWrapping.Wrap;
-        _billable.IsChecked = _activity.Billable;
+        _billable.IsChecked = _isNew || _activity.Billable;
+        _closed.IsChecked = _isNew || _activity.IsClosed;
+
+        var running = !_isNew && _activity.IsRunning;
+        if (running)
+        {
+            _closed.IsEnabled = false;
+            _closed.ToolTip = "L'attività è in corso: mettila in pausa o chiudila dal post-it.";
+        }
+
+        // una sessione per riga: "gg/mm/aaaa HH:mm-HH:mm"
+        var day = defaultDate ?? DateTime.Today;
+        _sessions.Text = _isNew
+            ? $"{day:dd/MM/yyyy} {DateTime.Now.AddHours(-1):HH:mm}-{DateTime.Now:HH:mm}"
+            : string.Join(Environment.NewLine, _activity.Segments.Where(s => s.EndUtc is not null)
+                .Select(s => $"{s.StartUtc.ToLocalTime():dd/MM/yyyy HH:mm}-{s.EndUtc!.Value.ToLocalTime():HH:mm}"));
+        _sessions.AcceptsReturn = true;
+        _sessions.Height = 78;
+        _sessions.TextWrapping = TextWrapping.NoWrap;
+        _sessions.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _sessions.FontFamily = new System.Windows.Media.FontFamily("Consolas");
 
         var root = new StackPanel { Margin = new Thickness(14) };
-        root.Children.Add(Ui.Field("Giorno", _date));
-        var times = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2 };
-        times.Children.Add(Ui.Field("Inizio (HH:mm)", _start));
-        times.Children.Add(Ui.Field("Fine (vuoto = in corso)", _end));
-        root.Children.Add(times);
+        root.Children.Add(Ui.Field("Titolo attività", _title));
         root.Children.Add(Ui.Field("Categoria", _category));
         root.Children.Add(Ui.Field("Cliente", _client));
         root.Children.Add(Ui.Field("Colleghi (separati da virgola)", _people));
         root.Children.Add(Ui.Field("Note", _notes));
+        root.Children.Add(Ui.Field(
+            running ? "Sessioni concluse (una per riga) — la sessione in corso non si modifica qui"
+                    : "Sessioni di lavoro (una per riga: gg/mm/aaaa HH:mm-HH:mm)", _sessions));
         root.Children.Add(_billable);
+        root.Children.Add(_closed);
 
         if (!_isNew)
         {
@@ -98,24 +118,44 @@ public sealed class EditActivityWindow : Window
         Content = root;
     }
 
+    private bool TryParseSessions(out List<(DateTime StartUtc, DateTime EndUtc)> result)
+    {
+        result = new();
+        var lines = (_sessions.Text ?? "").Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(lines[i])) continue;
+            var m = SessionLine.Match(lines[i]);
+            if (!m.Success ||
+                !DateTime.TryParseExact(m.Groups[1].Value, "d/M/yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day) ||
+                !TimeSpan.TryParse(m.Groups[2].Value, CultureInfo.InvariantCulture, out var s) ||
+                !TimeSpan.TryParse(m.Groups[3].Value, CultureInfo.InvariantCulture, out var e))
+            {
+                _error.Text = $"Riga {i + 1} non valida: usa gg/mm/aaaa HH:mm-HH:mm";
+                return false;
+            }
+            if (e <= s)
+            {
+                _error.Text = $"Riga {i + 1}: la fine deve essere dopo l'inizio.";
+                return false;
+            }
+            result.Add((
+                DateTime.SpecifyKind(day.Date + s, DateTimeKind.Local).ToUniversalTime(),
+                DateTime.SpecifyKind(day.Date + e, DateTimeKind.Local).ToUniversalTime()));
+        }
+        return true;
+    }
+
     private void Save()
     {
-        if (_date.SelectedDate is not { } day) { _error.Text = "Scegli un giorno."; return; }
-        if (!TimeSpan.TryParseExact(_start.Text.Trim(), new[] { "h\\:mm", "hh\\:mm" }, CultureInfo.InvariantCulture, out var s))
-        { _error.Text = "Ora di inizio non valida (HH:mm)."; return; }
-
-        TimeSpan? e = null;
-        if (!string.IsNullOrWhiteSpace(_end.Text))
-        {
-            if (!TimeSpan.TryParseExact(_end.Text.Trim(), new[] { "h\\:mm", "hh\\:mm" }, CultureInfo.InvariantCulture, out var ee))
-            { _error.Text = "Ora di fine non valida (HH:mm)."; return; }
-            if (ee <= s) { _error.Text = "La fine deve essere dopo l'inizio."; return; }
-            e = ee;
-        }
+        _error.Text = "";
+        if (string.IsNullOrWhiteSpace(_title.Text)) { _error.Text = "Scrivi un titolo."; return; }
         if (_category.SelectedItem is not Category cat) { _error.Text = "Scegli una categoria."; return; }
+        if (!TryParseSessions(out var sessions)) return;
+        var closed = _closed.IsChecked == true && !_activity.IsRunning;
+        if (_isNew && sessions.Count == 0) { _error.Text = "Inserisci almeno una sessione."; return; }
 
-        _activity.StartUtc = DateTime.SpecifyKind(day.Date + s, DateTimeKind.Local).ToUniversalTime();
-        _activity.EndUtc = e is { } end ? DateTime.SpecifyKind(day.Date + end, DateTimeKind.Local).ToUniversalTime() : null;
+        _activity.Title = _title.Text.Trim();
         _activity.CategoryId = cat.Id;
         var clientName = _client.Text?.Trim();
         _activity.ClientId = string.IsNullOrEmpty(clientName) ? null : _store.GetOrAddClient(clientName);
@@ -125,15 +165,23 @@ public sealed class EditActivityWindow : Window
         _activity.Notes = string.IsNullOrWhiteSpace(_notes.Text) ? null : _notes.Text.Trim();
         _activity.Billable = _billable.IsChecked == true;
 
-        if (_isNew) _store.InsertActivity(_activity);
-        else _store.UpdateActivity(_activity);
+        if (_isNew)
+        {
+            _activity.Segments = sessions.Select(x => new Segment(0, 0, x.StartUtc, x.EndUtc)).ToList();
+            _activity.ClosedUtc = closed ? sessions.Max(x => x.EndUtc) : null;
+            _store.InsertActivity(_activity);
+        }
+        else
+        {
+            _store.SaveActivity(_activity, sessions, closed);
+        }
         Saved = true;
         Close();
     }
 
     private void Delete()
     {
-        if (MessageBox.Show(this, "Eliminare definitivamente questa attività?", "Conferma",
+        if (MessageBox.Show(this, "Eliminare definitivamente questa attività con tutte le sue sessioni?", "Conferma",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         _store.DeleteActivity(_activity.Id);
         Saved = true;

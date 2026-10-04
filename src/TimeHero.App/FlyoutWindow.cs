@@ -1,9 +1,9 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Media.Effects;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using TimeHero.Core;
 
@@ -12,28 +12,47 @@ namespace TimeHero.App;
 /// <summary>Il "post-it": finestra senza bordi ancorata sopra la taskbar, in basso a destra.</summary>
 public sealed class FlyoutWindow : Window
 {
+    private static readonly Brush PausedTile = Ui.Hex("#F4978E");
+
     private readonly TrayApp _app;
     private TimeStore Store => _app.Store;
     private ActivityTracker Tracker => _app.Tracker;
 
-    private readonly TextBlock _title = Ui.Text("Nessuna attività", 15, true);
+    // attività in corso
+    private readonly TextBox _curTitle = new()
+    {
+        FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Ui.Ink,
+        Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+        Padding = new Thickness(0, 0, 0, 2), ToolTip = "Titolo dell'attività (modificabile)",
+    };
+    private readonly TextBlock _curMeta = Ui.Text("", 11, fg: Ui.Subtle);
     private readonly TextBlock _elapsed = Ui.Text("00:00:00", 26, true);
-    private readonly TextBlock _since = Ui.Text("", 11, fg: Ui.Subtle);
+    private readonly TextBlock _session = Ui.Text("", 11, fg: Ui.Subtle);
     private readonly TextBlock _attach = Ui.Text("", 11, fg: Ui.Subtle);
-    private readonly TextBlock _today = Ui.Text("Oggi: 0h 00m", 12, true);
     private readonly Button _pause;
-    private readonly Button _stop;
+    private readonly Button _finish;
+    private readonly StackPanel _details = new();
     private readonly ComboBox _client = new() { IsEditable = true, FontSize = 12 };
     private readonly ComboBox _peoplePick = new() { FontSize = 12, ToolTip = "Aggiungi un collega dall'elenco" };
     private readonly TextBox _people = Ui.Input();
     private readonly TextBox _notes = Ui.Input();
+
+    // attività in pausa (riquadri rossi)
+    private readonly StackPanel _pausedSection = new() { Margin = new Thickness(0, 4, 0, 0) };
+    private readonly TextBlock _pausedLabel = Ui.Text("", 10.5, fg: Ui.Subtle);
+    private readonly WrapPanel _pausedTiles = new();
+
+    // nuova attività
+    private readonly TextBox _newTitle = Ui.Input();
     private readonly UniformGrid _cats = new() { Columns = 2 };
+
+    private readonly TextBlock _today = Ui.Text("Oggi: 0h 00m", 12, true);
     private readonly ToggleButton _pin;
     private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromSeconds(1) };
 
     private long? _shownActivityId;
-    private long? _pausedCategoryId;
-    private TimeSpan _doneToday;
+    private TimeSpan _curClosed;   // tempo già accumulato dall'attività in corso nelle sessioni concluse
+    private TimeSpan _doneToday;   // tempo di oggi nelle sessioni concluse
 
     public DateTime LastHiddenUtc { get; private set; } = DateTime.MinValue;
     public bool Pinned => _pin.IsChecked == true;
@@ -48,12 +67,12 @@ public sealed class FlyoutWindow : Window
         Topmost = true;
         ResizeMode = ResizeMode.NoResize;
         SizeToContent = SizeToContent.Height;
-        Width = 340;
+        Width = 360;
         ShowActivated = true;
         Title = "TimeHero";
 
-        _pause = Ui.Btn("⏸ Pausa", (_, _) => OnPauseResume());
-        _stop = Ui.Btn("⏹ Fine", (_, _) => OnStop(), Ui.Danger);
+        _pause = Ui.Btn("⏸ Pausa", (_, _) => OnPause(), tooltip: "Metti in pausa: resta aperta e la ritrovi nei riquadri rossi");
+        _finish = Ui.Btn("✔ Fine", (_, _) => OnFinish(), Ui.Go, "Chiudi definitivamente l'attività");
         _pin = new ToggleButton
         {
             Content = "📌",
@@ -75,6 +94,7 @@ public sealed class FlyoutWindow : Window
             _peoplePick.SelectedIndex = -1;
             ApplyDetailsToCurrent();
         };
+        _curTitle.LostFocus += (_, _) => ApplyDetailsToCurrent();
         _client.LostFocus += (_, _) => ApplyDetailsToCurrent();
         _client.SelectionChanged += (_, _) => Dispatcher.BeginInvoke(ApplyDetailsToCurrent);
         _people.LostFocus += (_, _) => ApplyDetailsToCurrent();
@@ -110,7 +130,7 @@ public sealed class FlyoutWindow : Window
         header.Children.Add(Ui.Text("TimeHero", 12, true, Ui.Subtle));
         root.Children.Add(header);
 
-        // attività corrente
+        // attività in corso
         var current = new Border
         {
             Background = Ui.Panel,
@@ -119,12 +139,13 @@ public sealed class FlyoutWindow : Window
             Margin = new Thickness(0, 4, 0, 6),
         };
         var cp = new StackPanel();
-        cp.Children.Add(_title);
+        cp.Children.Add(_curTitle);
+        cp.Children.Add(_curMeta);
         cp.Children.Add(_elapsed);
-        cp.Children.Add(_since);
+        cp.Children.Add(_session);
         var buttons = new UniformGrid { Columns = 2, Margin = new Thickness(0, 6, 0, 0) };
         buttons.Children.Add(_pause);
-        buttons.Children.Add(_stop);
+        buttons.Children.Add(_finish);
         cp.Children.Add(buttons);
         var shots = new UniformGrid { Columns = 2 };
         shots.Children.Add(Ui.Btn("📎 Screenshot", async (_, _) => await _app.CaptureScreenshotAsync(),
@@ -133,23 +154,33 @@ public sealed class FlyoutWindow : Window
             tooltip: "Allega l'immagine negli appunti (anche Ctrl+V)"));
         cp.Children.Add(shots);
         cp.Children.Add(_attach);
-        current.Child = cp;
-        root.Children.Add(current);
 
-        // dettagli
-        root.Children.Add(Ui.Field("Cliente", _client));
+        _details.Children.Add(Ui.Field("Cliente", _client));
         var peopleRow = new DockPanel();
         _peoplePick.Width = 90;
         DockPanel.SetDock(_peoplePick, Dock.Right);
         peopleRow.Children.Add(_peoplePick);
         peopleRow.Children.Add(_people);
-        root.Children.Add(Ui.Field("Colleghi (separati da virgola)", peopleRow));
-        root.Children.Add(Ui.Field("Note", _notes));
+        _details.Children.Add(Ui.Field("Colleghi (separati da virgola)", peopleRow));
+        _details.Children.Add(Ui.Field("Note", _notes));
+        cp.Children.Add(_details);
+        current.Child = cp;
+        root.Children.Add(current);
 
-        // categorie
-        var catsLabel = Ui.Text("Avvia attività", 10.5, fg: Ui.Subtle);
-        catsLabel.Margin = new Thickness(0, 10, 0, 2);
-        root.Children.Add(catsLabel);
+        // attività in pausa
+        _pausedSection.Children.Add(_pausedLabel);
+        _pausedSection.Children.Add(_pausedTiles);
+        root.Children.Add(_pausedSection);
+
+        // nuova attività
+        var newLabel = Ui.Text("Nuova attività", 10.5, fg: Ui.Subtle);
+        newLabel.Margin = new Thickness(0, 8, 0, 2);
+        root.Children.Add(newLabel);
+        _newTitle.ToolTip = "Titolo, es. \"Deploy VM per Contoso\". Se lo lasci vuoto si usa il nome della categoria.";
+        root.Children.Add(_newTitle);
+        var catsHint = Ui.Text("poi scegli il tipo per avviarla ↓", 10, fg: Ui.Subtle);
+        catsHint.Margin = new Thickness(0, 2, 0, 2);
+        root.Children.Add(catsHint);
         root.Children.Add(_cats);
 
         // piè di pagina
@@ -207,74 +238,131 @@ public sealed class FlyoutWindow : Window
     }
 
     // ---------- stato ----------
-    /// <summary>Riallinea l'interfaccia ai dati (chiamato a ogni cambio di attività e all'apertura).</summary>
+    /// <summary>Riallinea l'interfaccia ai dati (a ogni cambio di attività e all'apertura).</summary>
     public void Refresh()
     {
         var cur = Tracker.Current;
-        var cats = Store.GetCategories();
-        RebuildCategories(cats, cur?.CategoryId);
+        var allCats = Store.GetCategories(true);
+        RebuildCategories(allCats.Where(c => c.Active).ToList());
 
         var clientText = _client.Text;
         _client.ItemsSource = Store.GetClients().Select(c => c.Name).ToList();
         _client.Text = clientText;
         _peoplePick.ItemsSource = Store.GetPeople().Select(p => p.Name).ToList();
 
-        if (cur is not null && _shownActivityId != cur.Id) FillDetails(cur);
+        if (_shownActivityId != cur?.Id)
+        {
+            if (cur is not null) FillDetails(cur);
+            else ClearDetails();
+        }
         _shownActivityId = cur?.Id;
+
+        _details.IsEnabled = cur is not null;
+        _curTitle.IsEnabled = cur is not null;
+        _pause.IsEnabled = cur is not null;
+        _finish.IsEnabled = cur is not null;
+
+        if (cur is null)
+        {
+            _curTitle.Text = "Nessuna attività in corso";
+            _curMeta.Text = Tracker.Paused.Count > 0 ? "Riprendi un riquadro rosso o avviane una nuova" : "";
+            _attach.Text = "";
+            _curClosed = TimeSpan.Zero;
+        }
+        else
+        {
+            var cat = allCats.FirstOrDefault(c => c.Id == cur.CategoryId)?.Name ?? "?";
+            _curMeta.Text = $"{cat} · dalle {cur.StartUtc.ToLocalTime():HH:mm}";
+            var n = Store.GetAttachments(cur.Id).Count;
+            _attach.Text = n == 0 ? "" : n == 1 ? "📎 1 allegato" : $"📎 {n} allegati";
+            _curClosed = TimeSpan.FromTicks(cur.Segments.Where(s => s.EndUtc is not null)
+                .Sum(s => s.Duration(DateTime.UtcNow).Ticks));
+        }
+
+        RebuildPausedTiles(allCats);
 
         var today = DateTime.Today;
         var from = DateTime.SpecifyKind(today, DateTimeKind.Local).ToUniversalTime();
         var to = DateTime.SpecifyKind(today.AddDays(1), DateTimeKind.Local).ToUniversalTime();
-        _doneToday = TimeSpan.FromTicks(Store.GetActivities(from, to)
-            .Where(a => !a.IsRunning).Sum(a => a.Duration().Ticks));
+        _doneToday = TimeSpan.FromTicks(Store.GetSegments(from, to)
+            .Where(s => s.EndUtc is not null).Sum(s => s.Duration(DateTime.UtcNow).Ticks));
 
-        if (cur is null)
-        {
-            _title.Text = _pausedCategoryId is { } pid
-                ? $"In pausa: {cats.FirstOrDefault(c => c.Id == pid)?.Name}"
-                : "Nessuna attività";
-            _since.Text = "";
-            _attach.Text = "";
-        }
-        else
-        {
-            var cat = cats.FirstOrDefault(c => c.Id == cur.CategoryId)?.Name ?? "?";
-            _title.Text = cat;
-            _since.Text = $"dalle {cur.StartUtc.ToLocalTime():HH:mm}";
-            var n = Store.GetAttachments(cur.Id).Count;
-            _attach.Text = n == 0 ? "" : n == 1 ? "📎 1 allegato" : $"📎 {n} allegati";
-        }
-
-        _pause.Content = cur is null ? "▶ Riprendi" : "⏸ Pausa";
-        _pause.IsEnabled = cur is not null || _pausedCategoryId is not null;
-        _stop.IsEnabled = cur is not null || _pausedCategoryId is not null;
         UpdateClock();
     }
 
     private void UpdateClock()
     {
         var cur = Tracker.Current;
-        var running = cur?.Duration() ?? TimeSpan.Zero;
-        _elapsed.Text = Ui.Hms(running);
-        _today.Text = $"Oggi: {Reporting.FormatHm(_doneToday + running)}";
+        var open = cur?.Segments.FirstOrDefault(s => s.EndUtc is null);
+        var session = open is null ? TimeSpan.Zero : DateTime.UtcNow - open.StartUtc;
+        _elapsed.Text = Ui.Hms(cur is null ? TimeSpan.Zero : _curClosed + session);
+        _session.Text = cur is null ? "" : $"totale attività · sessione corrente {Ui.Hms(session)}";
+        _today.Text = $"Oggi: {Reporting.FormatHm(_doneToday + session)}";
     }
 
-    private void RebuildCategories(IReadOnlyList<Category> cats, long? activeId)
+    private void RebuildPausedTiles(IReadOnlyList<Category> cats)
+    {
+        _pausedTiles.Children.Clear();
+        var paused = Tracker.Paused;
+        _pausedSection.Visibility = paused.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (paused.Count == 0) return;
+
+        _pausedLabel.Text = $"In pausa ({paused.Count}) — clic per riprendere";
+        foreach (var a in paused) _pausedTiles.Children.Add(BuildTile(a, cats));
+    }
+
+    /// <summary>Riquadro rosso di un'attività in pausa: titolo, tempo totale, riprendi / chiudi.</summary>
+    private UIElement BuildTile(Activity a, IReadOnlyList<Category> cats)
+    {
+        var cat = cats.FirstOrDefault(c => c.Id == a.CategoryId)?.Name ?? "?";
+        var total = a.Duration(DateTime.UtcNow);
+        var since = a.StartUtc.ToLocalTime().Date < DateTime.Today ? $" · dal {a.StartUtc.ToLocalTime():dd/MM}" : "";
+
+        var title = Ui.Text(a.Title, 12.5, true);
+        title.TextTrimming = TextTrimming.CharacterEllipsis;
+        title.TextWrapping = TextWrapping.NoWrap;
+        var meta = Ui.Text($"{cat} · {Reporting.FormatHm(total)}{since}", 10.5, fg: Ui.Ink);
+        meta.TextTrimming = TextTrimming.CharacterEllipsis;
+        meta.TextWrapping = TextWrapping.NoWrap;
+
+        var info = new StackPanel { Background = Brushes.Transparent, Cursor = Cursors.Hand };
+        info.Children.Add(title);
+        info.Children.Add(meta);
+        info.MouseLeftButtonUp += (_, _) => Resume(a);
+
+        var actions = new UniformGrid { Columns = 2, Margin = new Thickness(0, 4, 0, 0) };
+        actions.Children.Add(Ui.Btn("▶", (_, _) => Resume(a), Brushes.White, "Riprendi"));
+        actions.Children.Add(Ui.Btn("✔", (_, _) => Tracker.Finish(a.Id), Brushes.White, "Chiudi definitivamente"));
+
+        var body = new StackPanel();
+        body.Children.Add(info);
+        body.Children.Add(actions);
+
+        return new Border
+        {
+            Width = 157,
+            Margin = new Thickness(0, 0, 6, 6),
+            Padding = new Thickness(8),
+            Background = PausedTile,
+            CornerRadius = new CornerRadius(8),
+            ToolTip = a.Title,
+            Child = body,
+        };
+    }
+
+    private void RebuildCategories(IReadOnlyList<Category> cats)
     {
         _cats.Children.Clear();
         foreach (var cat in cats)
         {
             var c = cat;
-            var isActive = c.Id == activeId;
-            var btn = Ui.Btn(isActive ? "● " + c.Name : c.Name, (_, _) => StartCategory(c.Id),
-                Ui.Hex(isActive ? c.Color : Blend(c.Color)));
-            btn.FontWeight = isActive ? FontWeights.Bold : FontWeights.Normal;
+            var btn = Ui.Btn(c.Name, (_, _) => StartNew(c), Ui.Hex(Blend(c.Color)));
             btn.Margin = new Thickness(2);
             _cats.Children.Add(btn);
         }
     }
 
-    /// <summary>Versione più tenue del colore della categoria (per i pulsanti non attivi).</summary>
+    /// <summary>Versione più tenue del colore della categoria.</summary>
     private static string Blend(string hex)
     {
         var c = (Color)ColorConverter.ConvertFromString(hex);
@@ -283,45 +371,45 @@ public sealed class FlyoutWindow : Window
     }
 
     // ---------- azioni ----------
-    private void StartCategory(long categoryId)
-    {
-        var (clientId, personIds) = ReadDetails();
-        var notes = Tracker.Current is null ? NullIfEmpty(_notes.Text) : null;
-        _pausedCategoryId = null;
-        _shownActivityId = null; // forza il riallineamento dei campi
-        Tracker.Start(categoryId, clientId, personIds, notes);
-        // il cliente e i colleghi restano nei campi (stesso cliente, altro tipo di lavoro); le note no
-        if (notes is null) _notes.Text = "";
-    }
-
-    private void OnPauseResume()
-    {
-        if (Tracker.Current is { } cur)
-        {
-            ApplyDetailsToCurrent();
-            _pausedCategoryId = cur.CategoryId;
-            Tracker.Stop();
-        }
-        else if (_pausedCategoryId is { } id)
-        {
-            StartCategory(id);
-        }
-    }
-
-    private void OnStop()
+    /// <summary>Crea e avvia una nuova attività; quella in corso va in pausa (riquadro rosso).</summary>
+    private void StartNew(Category cat)
     {
         ApplyDetailsToCurrent();
-        _pausedCategoryId = null;
-        Tracker.Stop();
-        ClearDetails();
-        Refresh();
+        var title = _newTitle.Text.Trim();
+        if (title.Length == 0) title = cat.Name;
+        _newTitle.Text = "";
+        Tracker.Start(title, cat.Id);
+        Dispatcher.BeginInvoke(() => _client.Focus());
+    }
+
+    private void Resume(Activity a)
+    {
+        ApplyDetailsToCurrent();
+        Tracker.Resume(a.Id);
+    }
+
+    private void OnPause()
+    {
+        ApplyDetailsToCurrent();
+        Tracker.Pause();
+    }
+
+    private void OnFinish()
+    {
+        ApplyDetailsToCurrent();
+        Tracker.Finish();
     }
 
     private void ApplyDetailsToCurrent()
     {
-        if (Tracker.Current is null) return;
+        if (Tracker.Current is not { } cur) return;
         var (clientId, personIds) = ReadDetails();
-        Tracker.UpdateCurrent(clientId, personIds, NullIfEmpty(_notes.Text));
+        var title = _curTitle.Text.Trim();
+        if (title.Length > 0) cur.Title = title;
+        cur.ClientId = clientId;
+        cur.PersonIds = personIds;
+        cur.Notes = NullIfEmpty(_notes.Text);
+        Tracker.UpdateDetails(cur);
     }
 
     /// <summary>Legge i campi; crea al volo clienti/colleghi nuovi nel database.</summary>
@@ -337,6 +425,7 @@ public sealed class FlyoutWindow : Window
     {
         var clients = Store.GetClients(true);
         var people = Store.GetPeople();
+        _curTitle.Text = a.Title;
         _client.Text = clients.FirstOrDefault(c => c.Id == a.ClientId)?.Name ?? "";
         _people.Text = string.Join(", ", a.PersonIds.Select(id => people.FirstOrDefault(p => p.Id == id)?.Name)
             .Where(n => n is not null));

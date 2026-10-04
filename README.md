@@ -2,11 +2,14 @@
 
 Post-it per Windows 11 che traccia le attività della giornata lavorativa e aiuta a compilare i timesheet.
 
-- **Post-it** ancorato sopra la taskbar (icona nella tray, oppure `Ctrl+Alt+T`): avvia/pausa/termina l'attività,
-  pulsanti rapidi per le categorie (Attività programmate, Chiamate, Gestione mail, …), cliente, colleghi e note.
+- **Post-it** ancorato sopra la taskbar (icona nella tray, oppure `Ctrl+Alt+T`).
+- **Attività con titolo e più sessioni:** scrivi un titolo (es. "Deploy VM per Contoso") e scegli il tipo per avviarla.
+  Avviandone un'altra la precedente va **in pausa** e compare come **riquadro rosso**: un clic la riprende (nuova
+  sessione sulla *stessa* attività). Una sola attività accumula tempo alla volta; solo **✔ Fine** chiude davvero.
+  Nello storico c'è **una riga per attività e per giorno** con il tempo reale totale, comunque tu l'abbia interrotta.
 - **Notifica Windows ogni 5 minuti** con l'attività in corso (pulsanti *Termina* / *Apri*).
 - **Screenshot** allegati all'attività in corso (ritaglio di Windows, oppure Ctrl+V dagli appunti).
-- **Storico**: per giorno/settimana/mese, totali per cliente/categoria/giorno, arrotondamento (5–30 min),
+- **Storico**: per attività, giorno/settimana/mese, totali per cliente/categoria/giorno, arrotondamento (5–30 min),
   modifica manuale, *Copia riepilogo* e **export CSV** (Excel italiano).
 - **Protezioni**: chiede cosa fare dopo un'assenza (inattività/blocco schermo) o se l'app viene chiusa con un'attività aperta.
 - Database locale SQLite: `%LOCALAPPDATA%\TimeHero\timehero.sqlite` (screenshot in `Attachments\`).

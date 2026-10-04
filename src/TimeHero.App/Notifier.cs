@@ -7,7 +7,7 @@ public static class Notifier
 {
     private static Action<string>? _onAction;
 
-    /// <param name="onAction">Riceve il valore "action" dei pulsanti del toast ("stop", "open").</param>
+    /// <param name="onAction">Riceve il valore "action" dei pulsanti del toast ("pause", "finish", "open").</param>
     public static void Init(Action<string> onAction)
     {
         _onAction = onAction;
@@ -25,7 +25,8 @@ public static class Notifier
         new ToastContentBuilder()
             .AddText(title)
             .AddText(body)
-            .AddButton(new ToastButton().SetContent("Termina").AddArgument("action", "stop").SetBackgroundActivation())
+            .AddButton(new ToastButton().SetContent("Pausa").AddArgument("action", "pause").SetBackgroundActivation())
+            .AddButton(new ToastButton().SetContent("Fine").AddArgument("action", "finish").SetBackgroundActivation())
             .AddButton(new ToastButton().SetContent("Apri").AddArgument("action", "open"))
             .Show(t =>
             {

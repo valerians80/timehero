@@ -135,10 +135,11 @@ public sealed class TrayApp : IDisposable
         string text;
         if (Tracker.Current is { } cur)
         {
-            var cat = Store.GetCategories(true).FirstOrDefault(c => c.Id == cur.CategoryId)?.Name ?? "?";
-            text = $"TimeHero · {cat} · {(int)cur.Duration().TotalMinutes} min";
+            text = $"TimeHero · {cur.Title} · {(int)cur.Duration().TotalMinutes} min";
         }
-        else text = "TimeHero · nessuna attività";
+        else text = Tracker.Paused.Count > 0
+            ? $"TimeHero · {Tracker.Paused.Count} in pausa"
+            : "TimeHero · nessuna attività";
         _tray.Text = text.Length > 63 ? text[..63] : text; // limite di NotifyIcon
     }
 
@@ -162,16 +163,20 @@ public sealed class TrayApp : IDisposable
 
     private void SendReminder(Activity cur)
     {
-        var cat = Store.GetCategories(true).FirstOrDefault(c => c.Id == cur.CategoryId)?.Name ?? "Attività";
+        var cat = Store.GetCategories(true).FirstOrDefault(c => c.Id == cur.CategoryId)?.Name;
         var client = cur.ClientId is { } id ? Store.GetClients(true).FirstOrDefault(c => c.Id == id)?.Name : null;
-        var minutes = (int)cur.Duration().TotalMinutes;
-        Notifier.Reminder("⏱ Attività in corso",
-            $"{cat}{(client is null ? "" : " · " + client)} — da {minutes} min (dalle {cur.StartUtc.ToLocalTime():HH:mm})");
+        var detail = string.Join(" · ", new[] { cat, client }.Where(x => !string.IsNullOrEmpty(x)));
+        var paused = Tracker.Paused.Count;
+        Notifier.Reminder($"⏱ In corso: {cur.Title}",
+            $"{(detail.Length > 0 ? detail + " — " : "")}sessione da {(int)(DateTime.UtcNow - (cur.Segments.LastOrDefault()?.StartUtc ?? cur.StartUtc)).TotalMinutes} min, " +
+            $"totale {Reporting.FormatHm(cur.Duration())}" +
+            (paused > 0 ? $"\nIn pausa: {paused}" : ""));
     }
 
     private void OnToastAction(string action)
     {
-        if (action == "stop") Tracker.Stop();
+        if (action == "pause") Tracker.Pause();
+        else if (action == "finish") Tracker.Finish();
         else if (action == "open") ShowFlyout();
     }
 
@@ -219,10 +224,10 @@ public sealed class TrayApp : IDisposable
             var r = System.Windows.MessageBox.Show(
                 $"Sei stato lontano dal PC dalle {sinceUtc.ToLocalTime():HH:mm} ({(int)away.TotalMinutes} min).\n\n" +
                 "SÌ = conta questo tempo nell'attività in corso\n" +
-                $"NO = termina l'attività alle {sinceUtc.ToLocalTime():HH:mm}",
+                $"NO = metti l'attività in pausa alle {sinceUtc.ToLocalTime():HH:mm}",
                 "TimeHero — eri ancora al lavoro?",
                 MessageBoxButton.YesNo, MessageBoxImage.Question);
-            if (r == MessageBoxResult.No && Tracker.Current?.Id == cur.Id) Tracker.Stop(sinceUtc);
+            if (r == MessageBoxResult.No && Tracker.Current?.Id == cur.Id) Tracker.Pause(sinceUtc);
         }
         finally
         {
@@ -238,16 +243,16 @@ public sealed class TrayApp : IDisposable
         if (!DateTime.TryParse(Store.GetSetting("heartbeat"), null,
                 System.Globalization.DateTimeStyles.RoundtripKind, out var hb)) return;
         hb = hb.ToUniversalTime();
-        if (hb <= cur.StartUtc || DateTime.UtcNow - hb < TimeSpan.FromMinutes(2)) return; // era attiva fino a poco fa
+        if (hb <= (cur.Segments.LastOrDefault()?.StartUtc ?? cur.StartUtc) || DateTime.UtcNow - hb < TimeSpan.FromMinutes(2)) return; // era attiva fino a poco fa
 
         var r = System.Windows.MessageBox.Show(
-            $"L'attività \"{Store.GetCategories(true).FirstOrDefault(c => c.Id == cur.CategoryId)?.Name}\" " +
-            $"iniziata alle {cur.StartUtc.ToLocalTime():dd/MM HH:mm} risulta ancora aperta.\n" +
+            $"L'attività \"{cur.Title}\" risulta ancora in corso " +
+            $"(sessione iniziata alle {cur.Segments.LastOrDefault()?.StartUtc.ToLocalTime():dd/MM HH:mm}).\n" +
             $"TimeHero è stato chiuso alle {hb.ToLocalTime():HH:mm}.\n\n" +
             "SÌ = continua a contare\n" +
-            $"NO = chiudila alle {hb.ToLocalTime():HH:mm}",
+            $"NO = mettila in pausa alle {hb.ToLocalTime():HH:mm}",
             "TimeHero — attività rimasta aperta", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (r == MessageBoxResult.No) Tracker.Stop(hb);
+        if (r == MessageBoxResult.No) Tracker.Pause(hb);
     }
 
     // ---------- screenshot ----------

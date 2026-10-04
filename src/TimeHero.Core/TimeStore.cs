@@ -123,26 +123,35 @@ public sealed class TimeStore : IDisposable
     }
 
     // ---------- attività ----------
-    private const string ActivityColumns = "Id, CategoryId, ClientId, StartUtc, EndUtc, Notes, Billable";
+    private const string ActivityColumns = "Id, Title, CategoryId, ClientId, StartUtc, EndUtc, Notes, Billable";
 
-    private Activity ReadActivity(SqliteDataReader r) => new()
+    private static Activity ReadActivity(SqliteDataReader r) => new()
     {
         Id = r.GetInt64(0),
-        CategoryId = r.GetInt64(1),
-        ClientId = r.IsDBNull(2) ? null : r.GetInt64(2),
-        StartUtc = ParseUtc(r.GetString(3)),
-        EndUtc = r.IsDBNull(4) ? null : ParseUtc(r.GetString(4)),
-        Notes = r.IsDBNull(5) ? null : r.GetString(5),
-        Billable = r.GetInt64(6) == 1,
+        Title = r.GetString(1),
+        CategoryId = r.GetInt64(2),
+        ClientId = r.IsDBNull(3) ? null : r.GetInt64(3),
+        StartUtc = ParseUtc(r.GetString(4)),
+        ClosedUtc = r.IsDBNull(5) ? null : ParseUtc(r.GetString(5)),
+        Notes = r.IsDBNull(6) ? null : r.GetString(6),
+        Billable = r.GetInt64(7) == 1,
     };
 
-    private void LoadPeople(List<Activity> acts)
+    private static Segment ReadSegment(SqliteDataReader r) => new(
+        r.GetInt64(0), r.GetInt64(1), ParseUtc(r.GetString(2)), r.IsDBNull(3) ? null : ParseUtc(r.GetString(3)));
+
+    private void LoadDetails(List<Activity> acts)
     {
         foreach (var a in acts)
         {
-            using var c = Cmd("SELECT PersonId FROM ActivityPeople WHERE ActivityId = $a", ("$a", a.Id));
-            using var r = c.ExecuteReader();
-            while (r.Read()) a.PersonIds.Add(r.GetInt64(0));
+            using (var c = Cmd("SELECT PersonId FROM ActivityPeople WHERE ActivityId = $a", ("$a", a.Id)))
+            using (var r = c.ExecuteReader())
+                while (r.Read()) a.PersonIds.Add(r.GetInt64(0));
+
+            using (var c = Cmd("SELECT Id, ActivityId, StartUtc, EndUtc FROM ActivitySegments " +
+                               "WHERE ActivityId = $a ORDER BY StartUtc", ("$a", a.Id)))
+            using (var r = c.ExecuteReader())
+                while (r.Read()) a.Segments.Add(ReadSegment(r));
         }
     }
 
@@ -152,35 +161,93 @@ public sealed class TimeStore : IDisposable
         var list = new List<Activity>();
         using (var r = c.ExecuteReader())
             while (r.Read()) list.Add(ReadActivity(r));
-        LoadPeople(list);
+        LoadDetails(list);
         return list;
     }
 
+    /// <summary>Inserisce l'attività con le sue sessioni (a.Segments) e i colleghi.</summary>
     public long InsertActivity(Activity a)
     {
         using var tx = _conn.BeginTransaction();
-        using var c = Cmd("INSERT INTO Activities (CategoryId, ClientId, StartUtc, EndUtc, Notes, Billable) " +
-                          "VALUES ($cat, $cli, $s, $e, $n, $b)",
-            ("$cat", a.CategoryId), ("$cli", a.ClientId), ("$s", Iso(a.StartUtc)),
-            ("$e", a.EndUtc is null ? null : Iso(a.EndUtc.Value)), ("$n", a.Notes), ("$b", a.Billable ? 1 : 0));
+        if (a.Segments.Count > 0) a.StartUtc = a.Segments.Min(s => s.StartUtc);
+        using var c = Cmd("INSERT INTO Activities (Title, CategoryId, ClientId, StartUtc, EndUtc, Notes, Billable) " +
+                          "VALUES ($t, $cat, $cli, $s, $e, $n, $b)",
+            ("$t", a.Title), ("$cat", a.CategoryId), ("$cli", a.ClientId), ("$s", Iso(a.StartUtc)),
+            ("$e", a.ClosedUtc is null ? null : Iso(a.ClosedUtc.Value)), ("$n", a.Notes), ("$b", a.Billable ? 1 : 0));
         c.Transaction = tx;
         a.Id = InsertId(c);
         SavePeople(a, tx);
+        for (var i = 0; i < a.Segments.Count; i++)
+        {
+            var seg = a.Segments[i];
+            using var ins = Cmd("INSERT INTO ActivitySegments (ActivityId, StartUtc, EndUtc) VALUES ($a, $s, $e)",
+                ("$a", a.Id), ("$s", Iso(seg.StartUtc)), ("$e", seg.EndUtc is null ? null : Iso(seg.EndUtc.Value)));
+            ins.Transaction = tx;
+            a.Segments[i] = seg with { Id = InsertId(ins), ActivityId = a.Id };
+        }
         tx.Commit();
         return a.Id;
     }
 
+    /// <summary>Aggiorna titolo, categoria, cliente, note, fatturabile e colleghi (non le sessioni).</summary>
     public void UpdateActivity(Activity a)
     {
         using var tx = _conn.BeginTransaction();
-        using var c = Cmd("UPDATE Activities SET CategoryId=$cat, ClientId=$cli, StartUtc=$s, EndUtc=$e, " +
-                          "Notes=$n, Billable=$b WHERE Id=$i",
-            ("$cat", a.CategoryId), ("$cli", a.ClientId), ("$s", Iso(a.StartUtc)),
-            ("$e", a.EndUtc is null ? null : Iso(a.EndUtc.Value)), ("$n", a.Notes),
+        using var c = Cmd("UPDATE Activities SET Title=$t, CategoryId=$cat, ClientId=$cli, Notes=$n, Billable=$b WHERE Id=$i",
+            ("$t", a.Title), ("$cat", a.CategoryId), ("$cli", a.ClientId), ("$n", a.Notes),
             ("$b", a.Billable ? 1 : 0), ("$i", a.Id));
         c.Transaction = tx;
         c.ExecuteNonQuery();
         SavePeople(a, tx);
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Salvataggio dalla finestra di modifica: dettagli + sostituzione delle sessioni già concluse
+    /// (la sessione eventualmente in corso non viene toccata) + apertura/chiusura dell'attività.
+    /// </summary>
+    public void SaveActivity(Activity a, IReadOnlyList<(DateTime StartUtc, DateTime EndUtc)> closedSegments, bool closed)
+    {
+        using var tx = _conn.BeginTransaction();
+        using (var c = Cmd("UPDATE Activities SET Title=$t, CategoryId=$cat, ClientId=$cli, Notes=$n, Billable=$b WHERE Id=$i",
+                   ("$t", a.Title), ("$cat", a.CategoryId), ("$cli", a.ClientId), ("$n", a.Notes),
+                   ("$b", a.Billable ? 1 : 0), ("$i", a.Id)))
+        {
+            c.Transaction = tx;
+            c.ExecuteNonQuery();
+        }
+        SavePeople(a, tx);
+
+        using (var del = Cmd("DELETE FROM ActivitySegments WHERE ActivityId = $a AND EndUtc IS NOT NULL", ("$a", a.Id)))
+        {
+            del.Transaction = tx;
+            del.ExecuteNonQuery();
+        }
+        foreach (var (s, e) in closedSegments)
+        {
+            using var ins = Cmd("INSERT INTO ActivitySegments (ActivityId, StartUtc, EndUtc) VALUES ($a, $s, $e)",
+                ("$a", a.Id), ("$s", Iso(s)), ("$e", Iso(e)));
+            ins.Transaction = tx;
+            ins.ExecuteNonQuery();
+        }
+
+        var all = new List<Segment>();
+        using (var sel = Cmd("SELECT Id, ActivityId, StartUtc, EndUtc FROM ActivitySegments WHERE ActivityId = $a", ("$a", a.Id)))
+        {
+            sel.Transaction = tx;
+            using var r = sel.ExecuteReader();
+            while (r.Read()) all.Add(ReadSegment(r));
+        }
+        var start = all.Count > 0 ? all.Min(x => x.StartUtc) : a.StartUtc;
+        DateTime? end = !closed ? null
+            : all.Count > 0 ? all.Max(x => x.EndUtc ?? x.StartUtc)
+            : a.ClosedUtc ?? DateTime.UtcNow;
+        using (var upd = Cmd("UPDATE Activities SET StartUtc=$s, EndUtc=$e WHERE Id=$i",
+                   ("$s", Iso(start)), ("$e", end is null ? null : Iso(end.Value)), ("$i", a.Id)))
+        {
+            upd.Transaction = tx;
+            upd.ExecuteNonQuery();
+        }
         tx.Commit();
     }
 
@@ -206,15 +273,56 @@ public sealed class TimeStore : IDisposable
         c.ExecuteNonQuery();
     }
 
-    public Activity? GetRunningActivity() =>
-        QueryActivities("WHERE EndUtc IS NULL ORDER BY StartUtc DESC LIMIT 1").FirstOrDefault();
-
     public Activity? GetActivity(long id) => QueryActivities("WHERE Id = $i", ("$i", id)).FirstOrDefault();
 
-    /// <summary>Attività che iniziano nell'intervallo [fromUtc, toUtc).</summary>
-    public List<Activity> GetActivities(DateTime fromUtc, DateTime toUtc) =>
-        QueryActivities("WHERE StartUtc >= $f AND StartUtc < $t ORDER BY StartUtc",
+    /// <summary>Attività con una sessione in corso (normalmente al massimo una).</summary>
+    public List<Activity> GetRunningActivities() =>
+        QueryActivities("WHERE EndUtc IS NULL AND Id IN (SELECT ActivityId FROM ActivitySegments WHERE EndUtc IS NULL) " +
+                        "ORDER BY StartUtc");
+
+    /// <summary>Attività non ancora chiuse con "Fine" (in corso o in pausa).</summary>
+    public List<Activity> GetOpenActivities() => QueryActivities("WHERE EndUtc IS NULL ORDER BY StartUtc");
+
+    // ---------- sessioni ----------
+    public long StartSegment(long activityId, DateTime startUtc)
+    {
+        using var c = Cmd("INSERT INTO ActivitySegments (ActivityId, StartUtc) VALUES ($a, $s)",
+            ("$a", activityId), ("$s", Iso(startUtc)));
+        return InsertId(c);
+    }
+
+    /// <summary>Chiude la sessione aperta dell'attività (mai prima del suo inizio).</summary>
+    public void EndOpenSegment(long activityId, DateTime endUtc)
+    {
+        using var sel = Cmd("SELECT Id, StartUtc FROM ActivitySegments WHERE ActivityId = $a AND EndUtc IS NULL", ("$a", activityId));
+        var open = new List<(long Id, DateTime Start)>();
+        using (var r = sel.ExecuteReader())
+            while (r.Read()) open.Add((r.GetInt64(0), ParseUtc(r.GetString(1))));
+        foreach (var (id, start) in open)
+        {
+            using var c = Cmd("UPDATE ActivitySegments SET EndUtc = $e WHERE Id = $i",
+                ("$e", Iso(endUtc < start ? start : endUtc)), ("$i", id));
+            c.ExecuteNonQuery();
+        }
+    }
+
+    public void CloseActivity(long activityId, DateTime closedUtc)
+    {
+        using var c = Cmd("UPDATE Activities SET EndUtc = $e WHERE Id = $i", ("$e", Iso(closedUtc)), ("$i", activityId));
+        c.ExecuteNonQuery();
+    }
+
+    /// <summary>Sessioni che iniziano nell'intervallo [fromUtc, toUtc).</summary>
+    public List<Segment> GetSegments(DateTime fromUtc, DateTime toUtc)
+    {
+        using var c = Cmd("SELECT Id, ActivityId, StartUtc, EndUtc FROM ActivitySegments " +
+                          "WHERE StartUtc >= $f AND StartUtc < $t ORDER BY StartUtc",
             ("$f", Iso(fromUtc)), ("$t", Iso(toUtc)));
+        var list = new List<Segment>();
+        using var r = c.ExecuteReader();
+        while (r.Read()) list.Add(ReadSegment(r));
+        return list;
+    }
 
     // ---------- allegati ----------
     public long AddAttachment(long activityId, string filePath)

@@ -21,6 +21,7 @@ public sealed class HistoryWindow : Window
     private readonly ComboBox _round = new() { Width = 100 };
     private readonly DataGrid _grid = new();
     private readonly ListBox _byClient = new();
+    private readonly ListBox _byActivity = new();
     private readonly ListBox _byCategory = new();
     private readonly ListBox _byDay = new();
     private readonly TextBlock _total = Ui.Text("", 14, true);
@@ -33,8 +34,8 @@ public sealed class HistoryWindow : Window
     {
         _app = app;
         Title = "TimeHero — storico e timesheet";
-        Width = 1120;
-        Height = 640;
+        Width = 1240;
+        Height = 720;
         Background = Ui.NoteBg;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
@@ -86,6 +87,7 @@ public sealed class HistoryWindow : Window
         var side = new StackPanel { Width = 270, Margin = new Thickness(10, 0, 0, 0) };
         DockPanel.SetDock(side, Dock.Right);
         side.Children.Add(_total);
+        side.Children.Add(Section("Per attività", _byActivity));
         side.Children.Add(Section("Per cliente", _byClient));
         side.Children.Add(Section("Per categoria", _byCategory));
         side.Children.Add(Section("Per giorno", _byDay));
@@ -105,7 +107,7 @@ public sealed class HistoryWindow : Window
 
     private static StackPanel Section(string title, ListBox list)
     {
-        list.Height = 110;
+        list.Height = 88;
         list.Background = Ui.Panel;
         list.BorderBrush = Ui.NoteEdge;
         var p = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
@@ -151,7 +153,9 @@ public sealed class HistoryWindow : Window
         Col("Fine", nameof(HistRow.End), 65);
         Col("Durata", nameof(HistRow.Duration), 60);
         Col("Arrot.", nameof(HistRow.Rounded), 60);
-        Col("Categoria", nameof(HistRow.Category), 130);
+        Col("Stato", nameof(HistRow.Status), 65);
+        Col("Attività", nameof(HistRow.Title), 170);
+        Col("Categoria", nameof(HistRow.Category), 120);
         Col("Cliente", nameof(HistRow.Client), 120);
         Col("Colleghi", nameof(HistRow.People), 120);
         Col("Note", nameof(HistRow.Notes));
@@ -173,6 +177,7 @@ public sealed class HistoryWindow : Window
 
         static List<string> Lines(IEnumerable<SummaryLine> s) =>
             s.Select(l => $"{l.Key} — {Reporting.FormatHm(l.Total)}").ToList();
+        _byActivity.ItemsSource = Lines(Reporting.SummarizeBy(_rows, r => r.Title, round));
         _byClient.ItemsSource = Lines(Reporting.SummarizeBy(_rows, r => r.Client ?? "(nessun cliente)", round));
         _byCategory.ItemsSource = Lines(Reporting.SummarizeBy(_rows, r => r.Category, round));
         _byDay.ItemsSource = Reporting.SummarizeBy(_rows, r => r.Date.ToString("yyyy-MM-dd"), round)
@@ -234,6 +239,8 @@ public sealed class HistoryWindow : Window
                 return $"{(int)r.TotalHours}:{r.Minutes:00}";
             }
         }
+        public string Status => Src.Status;
+        public string Title => Src.Title;
         public string Category => Src.Category;
         public string Client => Src.Client ?? "";
         public string People => Src.People;

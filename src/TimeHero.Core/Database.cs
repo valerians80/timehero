@@ -54,6 +54,7 @@ public static class Database
             Active INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS Activities (
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Title TEXT NOT NULL DEFAULT '',
             CategoryId INTEGER NOT NULL REFERENCES Categories(Id),
             ClientId INTEGER REFERENCES Clients(Id),
             StartUtc TEXT NOT NULL,
@@ -61,6 +62,13 @@ public static class Database
             Notes TEXT,
             Billable INTEGER NOT NULL DEFAULT 1);
         CREATE INDEX IF NOT EXISTS IX_Activities_Start ON Activities(StartUtc);
+        CREATE TABLE IF NOT EXISTS ActivitySegments (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ActivityId INTEGER NOT NULL REFERENCES Activities(Id) ON DELETE CASCADE,
+            StartUtc TEXT NOT NULL,
+            EndUtc TEXT);
+        CREATE INDEX IF NOT EXISTS IX_Segments_Start ON ActivitySegments(StartUtc);
+        CREATE INDEX IF NOT EXISTS IX_Segments_Activity ON ActivitySegments(ActivityId);
         CREATE TABLE IF NOT EXISTS ActivityPeople (
             ActivityId INTEGER NOT NULL REFERENCES Activities(Id) ON DELETE CASCADE,
             PersonId INTEGER NOT NULL REFERENCES People(Id),
@@ -93,6 +101,8 @@ public static class Database
             cmd.ExecuteNonQuery();
         }
 
+        MigrateToSegments(conn);
+
         using var count = conn.CreateCommand();
         count.CommandText = "SELECT COUNT(*) FROM Categories";
         if ((long)count.ExecuteScalar()! > 0) return;
@@ -107,5 +117,28 @@ public static class Database
             ins.Parameters.AddWithValue("$o", order++);
             ins.ExecuteNonQuery();
         }
+    }
+
+    /// <summary>
+    /// Database creato dalla prima versione (una riga = una attività con inizio/fine):
+    /// aggiunge il titolo (= nome categoria) e trasforma ogni riga in una attività con una sessione.
+    /// </summary>
+    private static void MigrateToSegments(SqliteConnection conn)
+    {
+        using var check = conn.CreateCommand();
+        check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('Activities') WHERE name = 'Title'";
+        if ((long)check.ExecuteScalar()! > 0) return;
+
+        using var tx = conn.BeginTransaction();
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            ALTER TABLE Activities ADD COLUMN Title TEXT NOT NULL DEFAULT '';
+            UPDATE Activities SET Title = COALESCE((SELECT Name FROM Categories WHERE Id = CategoryId), '');
+            INSERT INTO ActivitySegments (ActivityId, StartUtc, EndUtc)
+                SELECT Id, StartUtc, EndUtc FROM Activities;
+            """;
+        cmd.ExecuteNonQuery();
+        tx.Commit();
     }
 }
