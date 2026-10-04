@@ -29,7 +29,8 @@ public sealed class FlyoutWindow : Window
     private readonly TextBlock _attach = Ui.Text("", 11, fg: Ui.Subtle);
     private readonly Button _pause;
     private readonly Button _finish;
-    private readonly StackPanel _details = new();
+    private readonly Button _editBtn;
+    private readonly StackPanel _runningBlock = new();
     private readonly ComboBox _client = new() { IsEditable = true, FontSize = 12 };
     private readonly ComboBox _peoplePick = new() { FontSize = 12, ToolTip = "Aggiungi un collega dall'elenco" };
     private readonly TextBox _people = Ui.Input();
@@ -40,8 +41,15 @@ public sealed class FlyoutWindow : Window
     private readonly TextBlock _pausedLabel = Ui.Text("", 10.5, fg: Ui.Subtle);
     private readonly WrapPanel _pausedTiles = new();
 
-    // nuova attività
+    // pannello "nuova attività" / "dettagli" (nascosto finché non serve)
+    private enum PanelMode { None, New, Edit }
+    private PanelMode _mode = PanelMode.None;
+    private Button _newBtn = null!;
+    private readonly Border _form = new();
+    private readonly TextBlock _formTitle = Ui.Text("", 12, true);
     private readonly TextBox _newTitle = Ui.Input();
+    private StackPanel _titleField = null!;
+    private readonly StackPanel _catsBlock = new();
     private readonly UniformGrid _cats = new() { Columns = 2 };
 
     private readonly TextBlock _today = Ui.Text("Oggi: 0h 00m", 12, true);
@@ -73,6 +81,7 @@ public sealed class FlyoutWindow : Window
 
         _pause = Ui.Btn("⏸ Pausa", (_, _) => OnPause(), tooltip: "Metti in pausa: resta aperta e la ritrovi nei riquadri rossi");
         _finish = Ui.Btn("✔ Fine", (_, _) => OnFinish(), Ui.Go, "Chiudi definitivamente l'attività");
+        _editBtn = Ui.Btn("✎", (_, _) => ToggleEdit(), Brushes.Transparent, "Cliente, colleghi e note dell'attività in corso");
         _pin = new ToggleButton
         {
             Content = "📌",
@@ -85,6 +94,7 @@ public sealed class FlyoutWindow : Window
         };
 
         Content = BuildUi();
+        SetMode(PanelMode.None);
 
         _peoplePick.SelectionChanged += (_, _) =>
         {
@@ -93,13 +103,13 @@ public sealed class FlyoutWindow : Window
             if (!names.Contains(name, StringComparer.OrdinalIgnoreCase)) names.Add(name);
             _people.Text = string.Join(", ", names);
             _peoplePick.SelectedIndex = -1;
-            ApplyDetailsToCurrent();
+            ApplyCurrent();
         };
-        _curTitle.LostFocus += (_, _) => ApplyDetailsToCurrent();
-        _client.LostFocus += (_, _) => ApplyDetailsToCurrent();
-        _client.SelectionChanged += (_, _) => Dispatcher.BeginInvoke(ApplyDetailsToCurrent);
-        _people.LostFocus += (_, _) => ApplyDetailsToCurrent();
-        _notes.LostFocus += (_, _) => ApplyDetailsToCurrent();
+        _curTitle.LostFocus += (_, _) => ApplyCurrent();
+        _client.LostFocus += (_, _) => ApplyCurrent();
+        _client.SelectionChanged += (_, _) => Dispatcher.BeginInvoke(ApplyCurrent);
+        _people.LostFocus += (_, _) => ApplyCurrent();
+        _notes.LostFocus += (_, _) => ApplyCurrent();
 
         Deactivated += (_, _) =>
         {
@@ -142,31 +152,28 @@ public sealed class FlyoutWindow : Window
             Margin = new Thickness(0, 6, 0, 8),
         };
         var cp = new StackPanel();
-        cp.Children.Add(_curTitle);
+        var titleRow = new DockPanel();
+        DockPanel.SetDock(_editBtn, Dock.Right);
+        titleRow.Children.Add(_editBtn);
+        titleRow.Children.Add(_curTitle);
+        cp.Children.Add(titleRow);
         cp.Children.Add(_curMeta);
-        cp.Children.Add(_elapsed);
-        cp.Children.Add(_session);
-        var buttons = new UniformGrid { Columns = 2, Margin = new Thickness(0, 6, 0, 0) };
+
+        // visibile solo con un'attività in corso: tempo, pausa/fine, screenshot
+        _runningBlock.Children.Add(_elapsed);
+        _runningBlock.Children.Add(_session);
+        var buttons = new UniformGrid { Columns = 2, Margin = new Thickness(0, 8, 0, 0) };
         buttons.Children.Add(_pause);
         buttons.Children.Add(_finish);
-        cp.Children.Add(buttons);
+        _runningBlock.Children.Add(buttons);
         var shots = new UniformGrid { Columns = 2 };
         shots.Children.Add(Ui.Btn("📎 Screenshot", async (_, _) => await _app.CaptureScreenshotAsync(),
             tooltip: "Ritaglia una parte dello schermo e allegala all'attività in corso"));
         shots.Children.Add(Ui.Btn("📋 Incolla", (_, _) => _app.PasteScreenshot(),
             tooltip: "Allega l'immagine negli appunti (anche Ctrl+V)"));
-        cp.Children.Add(shots);
-        cp.Children.Add(_attach);
-
-        _details.Children.Add(Ui.Field("Cliente", _client));
-        var peopleRow = new DockPanel();
-        _peoplePick.Width = 90;
-        DockPanel.SetDock(_peoplePick, Dock.Right);
-        peopleRow.Children.Add(_peoplePick);
-        peopleRow.Children.Add(_people);
-        _details.Children.Add(Ui.Field("Colleghi (separati da virgola)", peopleRow));
-        _details.Children.Add(Ui.Field("Note", _notes));
-        cp.Children.Add(_details);
+        _runningBlock.Children.Add(shots);
+        _runningBlock.Children.Add(_attach);
+        cp.Children.Add(_runningBlock);
         current.Child = cp;
         root.Children.Add(current);
 
@@ -175,16 +182,41 @@ public sealed class FlyoutWindow : Window
         _pausedSection.Children.Add(_pausedTiles);
         root.Children.Add(_pausedSection);
 
-        // nuova attività
-        var newLabel = Ui.Text("Nuova attività", 10.5, fg: Ui.Subtle);
-        newLabel.Margin = new Thickness(0, 8, 0, 2);
-        root.Children.Add(newLabel);
-        _newTitle.ToolTip = "Titolo, es. \"Deploy VM per Contoso\". Se lo lasci vuoto si usa il nome della categoria.";
-        root.Children.Add(_newTitle);
-        var catsHint = Ui.Text("poi scegli il tipo per avviarla ↓", 10, fg: Ui.Subtle);
-        catsHint.Margin = new Thickness(0, 2, 0, 2);
-        root.Children.Add(catsHint);
-        root.Children.Add(_cats);
+        // pulsante "nuova attività"
+        _newBtn = Ui.Btn("＋ Nuova attività", (_, _) => ToggleNew(), Ui.AccentDim, null, Ui.Accent);
+        _newBtn.Margin = new Thickness(0, 2, 0, 0);
+        _newBtn.Padding = new Thickness(10, 9, 10, 9);
+        _newBtn.FontSize = 13;
+        root.Children.Add(_newBtn);
+
+        // pannello nascosto: titolo, cliente, colleghi, note e tipo (si apre con "nuova attività" o ✎)
+        var form = new StackPanel();
+        form.Children.Add(_formTitle);
+        _newTitle.ToolTip = "Es. \"Deploy VM per Contoso\". Se lo lasci vuoto si usa il nome del tipo.";
+        _titleField = Ui.Field("Titolo", _newTitle);
+        form.Children.Add(_titleField);
+        form.Children.Add(Ui.Field("Cliente", _client));
+        var peopleRow = new DockPanel();
+        _peoplePick.Width = 90;
+        DockPanel.SetDock(_peoplePick, Dock.Right);
+        peopleRow.Children.Add(_peoplePick);
+        peopleRow.Children.Add(_people);
+        form.Children.Add(Ui.Field("Colleghi (separati da virgola)", peopleRow));
+        form.Children.Add(Ui.Field("Note", _notes));
+        var catsLabel = Ui.Text("Scegli il tipo per avviarla", 10.5, fg: Ui.Subtle);
+        catsLabel.Margin = new Thickness(2, 10, 0, 3);
+        _catsBlock.Children.Add(catsLabel);
+        _catsBlock.Children.Add(_cats);
+        form.Children.Add(_catsBlock);
+
+        _form.Child = form;
+        _form.Background = Ui.Surface;
+        _form.BorderBrush = Ui.Border;
+        _form.BorderThickness = new Thickness(1);
+        _form.CornerRadius = new CornerRadius(12);
+        _form.Padding = new Thickness(12);
+        _form.Margin = new Thickness(0, 8, 0, 0);
+        root.Children.Add(_form);
 
         // piè di pagina
         var footer = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
@@ -257,18 +289,20 @@ public sealed class FlyoutWindow : Window
         {
             if (cur is not null) FillDetails(cur);
             else ClearDetails();
+            SetMode(PanelMode.None); // cambiata l'attività: il pannello si richiude
         }
         _shownActivityId = cur?.Id;
 
-        _details.IsEnabled = cur is not null;
         _curTitle.IsEnabled = cur is not null;
-        _pause.IsEnabled = cur is not null;
-        _finish.IsEnabled = cur is not null;
+        _runningBlock.Visibility = cur is null ? Visibility.Collapsed : Visibility.Visible;
+        _editBtn.Visibility = cur is null ? Visibility.Collapsed : Visibility.Visible;
 
         if (cur is null)
         {
             _curTitle.Text = "Nessuna attività in corso";
-            _curMeta.Text = Tracker.Paused.Count > 0 ? "Riprendi un riquadro rosso o avviane una nuova" : "";
+            _curMeta.Text = Tracker.Paused.Count > 0
+                ? "Riprendi un riquadro rosso o avviane una nuova"
+                : "Avvia la prima attività con il pulsante qui sotto";
             _attach.Text = "";
             _curClosed = TimeSpan.Zero;
         }
@@ -364,44 +398,83 @@ public sealed class FlyoutWindow : Window
     }
 
     // ---------- azioni ----------
-    /// <summary>Crea e avvia una nuova attività; quella in corso va in pausa (riquadro rosso).</summary>
+    private void SetMode(PanelMode mode)
+    {
+        _mode = mode;
+        _form.Visibility = mode == PanelMode.None ? Visibility.Collapsed : Visibility.Visible;
+        _titleField.Visibility = mode == PanelMode.New ? Visibility.Visible : Visibility.Collapsed;
+        _catsBlock.Visibility = mode == PanelMode.New ? Visibility.Visible : Visibility.Collapsed;
+        _formTitle.Text = mode == PanelMode.New ? "Nuova attività" : "Dettagli dell'attività in corso";
+        _newBtn.Content = mode == PanelMode.New ? "✕ Annulla" : "＋ Nuova attività";
+        _editBtn.Content = mode == PanelMode.Edit ? "✕" : "✎";
+    }
+
+    private void ToggleNew()
+    {
+        if (_mode == PanelMode.New) { SetMode(PanelMode.None); return; }
+        ApplyCurrent();
+        ClearDetails();
+        _newTitle.Text = "";
+        SetMode(PanelMode.New);
+        Dispatcher.BeginInvoke(() => _newTitle.Focus());
+    }
+
+    private void ToggleEdit()
+    {
+        if (_mode == PanelMode.Edit)
+        {
+            ApplyCurrent();
+            SetMode(PanelMode.None);
+            return;
+        }
+        if (Tracker.Current is not { } cur) return;
+        FillDetails(cur);
+        SetMode(PanelMode.Edit);
+    }
+
+    /// <summary>Avvia una nuova attività con i dati del pannello; quella in corso va in pausa (riquadro rosso).</summary>
     private void StartNew(Category cat)
     {
-        ApplyDetailsToCurrent();
+        ApplyCurrent();
         var title = _newTitle.Text.Trim();
         if (title.Length == 0) title = cat.Name;
+        var (clientId, personIds) = ReadDetails();
+        var notes = NullIfEmpty(_notes.Text);
         _newTitle.Text = "";
-        Tracker.Start(title, cat.Id);
-        Dispatcher.BeginInvoke(() => _client.Focus());
+        Tracker.Start(title, cat.Id, clientId, personIds, notes); // Refresh richiude il pannello
     }
 
     private void Resume(Activity a)
     {
-        ApplyDetailsToCurrent();
+        ApplyCurrent();
         Tracker.Resume(a.Id);
     }
 
     private void OnPause()
     {
-        ApplyDetailsToCurrent();
+        ApplyCurrent();
         Tracker.Pause();
     }
 
     private void OnFinish()
     {
-        ApplyDetailsToCurrent();
+        ApplyCurrent();
         Tracker.Finish();
     }
 
-    private void ApplyDetailsToCurrent()
+    /// <summary>Salva il titolo (sempre) e, se il pannello dettagli è aperto, cliente/colleghi/note dell'attività in corso.</summary>
+    private void ApplyCurrent()
     {
         if (Tracker.Current is not { } cur) return;
-        var (clientId, personIds) = ReadDetails();
         var title = _curTitle.Text.Trim();
         if (title.Length > 0) cur.Title = title;
-        cur.ClientId = clientId;
-        cur.PersonIds = personIds;
-        cur.Notes = NullIfEmpty(_notes.Text);
+        if (_mode == PanelMode.Edit)
+        {
+            var (clientId, personIds) = ReadDetails();
+            cur.ClientId = clientId;
+            cur.PersonIds = personIds;
+            cur.Notes = NullIfEmpty(_notes.Text);
+        }
         Tracker.UpdateDetails(cur);
     }
 
