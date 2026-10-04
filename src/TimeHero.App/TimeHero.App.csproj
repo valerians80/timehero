@@ -9,12 +9,15 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <RootNamespace>TimeHero.App</RootNamespace>
     <AssemblyName>TimeHero</AssemblyName>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <!-- WPF + WinForms (solo per NotifyIcon): evita i using impliciti ambigui -->
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Threading" />
+    <Using Include="System.Threading.Tasks" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
