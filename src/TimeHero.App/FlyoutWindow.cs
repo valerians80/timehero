@@ -27,9 +27,17 @@ public sealed class FlyoutWindow : Window
     private readonly TextBlock _elapsed = Ui.Text("00:00:00", 26, true);
     private readonly TextBlock _session = Ui.Text("", 11, fg: Ui.Subtle);
     private readonly TextBlock _attach = Ui.Text("", 11, fg: Ui.Subtle);
+    private readonly TextBox _logBox = Ui.Input();
+    private readonly TextBlock _logHint = new()
+    {
+        Text = "Aggiungi una nota con orario…", FontSize = 12, Foreground = Ui.Subtle,
+        IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0),
+    };
+    private readonly TextBlock _lastNote = Ui.Text("", 10.5, fg: Ui.Subtle);
     private readonly Button _pause;
     private readonly Button _finish;
     private readonly Button _editBtn;
+    private readonly Button _timelineBtn;
     private readonly StackPanel _runningBlock = new();
     private readonly ComboBox _client = new() { IsEditable = true, FontSize = 12 };
     private readonly ComboBox _peoplePick = new() { FontSize = 12, ToolTip = "Aggiungi un collega dall'elenco" };
@@ -82,6 +90,10 @@ public sealed class FlyoutWindow : Window
         _pause = Ui.Btn("⏸ Pausa", (_, _) => OnPause(), tooltip: "Metti in pausa: resta aperta e la ritrovi nei riquadri rossi");
         _finish = Ui.Btn("✔ Fine", (_, _) => OnFinish(), Ui.Go, "Chiudi definitivamente l'attività");
         _editBtn = Ui.Btn("✎", (_, _) => ToggleEdit(), Brushes.Transparent, "Cliente, colleghi e note dell'attività in corso");
+        _timelineBtn = Ui.Btn("🕘", (_, _) =>
+        {
+            if (Tracker.Current is { } cur) _app.ShowTimeline(cur.Id);
+        }, Brushes.Transparent, "Timeline dell'attività: avvio, note, pause e riprese");
         _pin = new ToggleButton
         {
             Content = "📌",
@@ -105,6 +117,9 @@ public sealed class FlyoutWindow : Window
             _peoplePick.SelectedIndex = -1;
             ApplyCurrent();
         };
+        _logBox.TextChanged += (_, _) =>
+            _logHint.Visibility = _logBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _logBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) { AddLog(); e.Handled = true; } };
         _curTitle.LostFocus += (_, _) => ApplyCurrent();
         _client.LostFocus += (_, _) => ApplyCurrent();
         _client.SelectionChanged += (_, _) => Dispatcher.BeginInvoke(ApplyCurrent);
@@ -153,8 +168,11 @@ public sealed class FlyoutWindow : Window
         };
         var cp = new StackPanel();
         var titleRow = new DockPanel();
-        DockPanel.SetDock(_editBtn, Dock.Right);
-        titleRow.Children.Add(_editBtn);
+        var titleTools = new StackPanel { Orientation = Orientation.Horizontal };
+        DockPanel.SetDock(titleTools, Dock.Right);
+        titleTools.Children.Add(_timelineBtn);
+        titleTools.Children.Add(_editBtn);
+        titleRow.Children.Add(titleTools);
         titleRow.Children.Add(_curTitle);
         cp.Children.Add(titleRow);
         cp.Children.Add(_curMeta);
@@ -162,6 +180,21 @@ public sealed class FlyoutWindow : Window
         // visibile solo con un'attività in corso: tempo, pausa/fine, screenshot
         _runningBlock.Children.Add(_elapsed);
         _runningBlock.Children.Add(_session);
+
+        // diario: una nota con orario (Invio), subito sotto il cronometro
+        var logRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var logAdd = Ui.Btn("＋", (_, _) => AddLog(), Ui.AccentDim, "Aggiungi la nota alla timeline dell'attività", Ui.Accent);
+        DockPanel.SetDock(logAdd, Dock.Right);
+        logRow.Children.Add(logAdd);
+        var logField = new Grid();
+        logField.Children.Add(_logBox);
+        logField.Children.Add(_logHint);
+        logRow.Children.Add(logField);
+        _runningBlock.Children.Add(logRow);
+        _lastNote.TextTrimming = TextTrimming.CharacterEllipsis;
+        _lastNote.TextWrapping = TextWrapping.NoWrap;
+        _lastNote.Margin = new Thickness(2, 3, 0, 0);
+        _runningBlock.Children.Add(_lastNote);
         var buttons = new UniformGrid { Columns = 2, Margin = new Thickness(0, 8, 0, 0) };
         buttons.Children.Add(_pause);
         buttons.Children.Add(_finish);
@@ -290,12 +323,14 @@ public sealed class FlyoutWindow : Window
             if (cur is not null) FillDetails(cur);
             else ClearDetails();
             SetMode(PanelMode.None); // cambiata l'attività: il pannello si richiude
+            _logBox.Text = "";
         }
         _shownActivityId = cur?.Id;
 
         _curTitle.IsEnabled = cur is not null;
         _runningBlock.Visibility = cur is null ? Visibility.Collapsed : Visibility.Visible;
         _editBtn.Visibility = cur is null ? Visibility.Collapsed : Visibility.Visible;
+        _timelineBtn.Visibility = _editBtn.Visibility;
 
         if (cur is null)
         {
@@ -304,6 +339,7 @@ public sealed class FlyoutWindow : Window
                 ? "Riprendi un riquadro rosso o avviane una nuova"
                 : "Avvia la prima attività con il pulsante qui sotto";
             _attach.Text = "";
+            _lastNote.Visibility = Visibility.Collapsed;
             _curClosed = TimeSpan.Zero;
         }
         else
@@ -312,6 +348,7 @@ public sealed class FlyoutWindow : Window
             _curMeta.Text = $"{cat} · dalle {cur.StartUtc.ToLocalTime():HH:mm}";
             var n = Store.GetAttachments(cur.Id).Count;
             _attach.Text = n == 0 ? "" : n == 1 ? "📎 1 allegato" : $"📎 {n} allegati";
+            ShowLastNote(Store.GetNotes(cur.Id));
             _curClosed = TimeSpan.FromTicks(cur.Segments.Where(s => s.EndUtc is not null)
                 .Sum(s => s.Duration(DateTime.UtcNow).Ticks));
         }
@@ -460,6 +497,25 @@ public sealed class FlyoutWindow : Window
     {
         ApplyCurrent();
         Tracker.Finish();
+    }
+
+    private void AddLog()
+    {
+        var text = _logBox.Text.Trim();
+        if (text.Length == 0) return;
+        if (Tracker.AddNote(text) is null) return;
+        _logBox.Text = "";
+        if (Tracker.Current is { } cur) ShowLastNote(Store.GetNotes(cur.Id));
+        _logBox.Focus();
+    }
+
+    private void ShowLastNote(IReadOnlyList<ActivityNote> notes)
+    {
+        if (notes.Count == 0) { _lastNote.Visibility = Visibility.Collapsed; return; }
+        var last = notes[^1];
+        _lastNote.Text = $"📝 {notes.Count}  ·  ultima {last.CreatedUtc.ToLocalTime():HH:mm} — {last.Text}";
+        _lastNote.ToolTip = last.Text;
+        _lastNote.Visibility = Visibility.Visible;
     }
 
     /// <summary>Salva il titolo (sempre) e, se il pannello dettagli è aperto, cliente/colleghi/note dell'attività in corso.</summary>

@@ -343,6 +343,31 @@ public sealed class TimeStore : IDisposable
         return list;
     }
 
+    // ---------- note (diario dell'attività) ----------
+    public long AddNote(long activityId, string text, DateTime? createdUtc = null)
+    {
+        using var c = Cmd("INSERT INTO ActivityNotes (ActivityId, CreatedUtc, Text) VALUES ($a, $t, $x)",
+            ("$a", activityId), ("$t", Iso(createdUtc ?? DateTime.UtcNow)), ("$x", text.Trim()));
+        return InsertId(c);
+    }
+
+    public List<ActivityNote> GetNotes(long activityId)
+    {
+        using var c = Cmd("SELECT Id, ActivityId, CreatedUtc, Text FROM ActivityNotes " +
+                          "WHERE ActivityId = $a ORDER BY CreatedUtc, Id", ("$a", activityId));
+        var list = new List<ActivityNote>();
+        using var r = c.ExecuteReader();
+        while (r.Read())
+            list.Add(new ActivityNote(r.GetInt64(0), r.GetInt64(1), ParseUtc(r.GetString(2)), r.GetString(3)));
+        return list;
+    }
+
+    public void DeleteNote(long noteId)
+    {
+        using var c = Cmd("DELETE FROM ActivityNotes WHERE Id = $i", ("$i", noteId));
+        c.ExecuteNonQuery();
+    }
+
     // ---------- impostazioni ----------
     public string? GetSetting(string key)
     {

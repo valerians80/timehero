@@ -265,3 +265,81 @@ public class CoreTests
         }
     }
 }
+
+public class NotesAndTimelineTests
+{
+    private static readonly DateTime Day9 = new(2026, 10, 5, 9, 0, 0, DateTimeKind.Local);
+
+    [Fact]
+    public void Timeline_orders_starts_notes_pauses_and_close()
+    {
+        using var s = new TimeStore(Database.Open(":memory:"));
+        var t = Day9.ToUniversalTime();
+        var tracker = new ActivityTracker(s, () => t);
+        var cat = s.GetCategories()[0].Id;
+
+        var a = tracker.Start("Deploy VM", cat);                 // 09:00 avviata
+        t = t.AddMinutes(10);
+        tracker.AddNote("creata la VM, manca la rete");          // 09:10
+        t = t.AddMinutes(20);
+        tracker.Start("Call", cat);                              // 09:30 deploy in pausa
+        t = t.AddMinutes(15);
+        tracker.Resume(a.Id);                                    // 09:45 ripresa
+        t = t.AddMinutes(5);
+        tracker.AddNote("rete sistemata");                       // 09:50
+        t = t.AddMinutes(10);
+        tracker.Finish();                                        // 10:00 chiusa
+
+        var loaded = s.GetActivity(a.Id)!;
+        var events = Timeline.Build(loaded, s.GetNotes(a.Id), t);
+        Assert.Equal(
+            new[] { TimelineKind.Start, TimelineKind.Note, TimelineKind.Pause, TimelineKind.Resume, TimelineKind.Note, TimelineKind.Close },
+            events.Select(e => e.Kind).ToArray());
+        Assert.Equal("creata la VM, manca la rete", events[1].Text);
+        Assert.Contains("sessione di 30 min", events[2].Text);
+        Assert.Contains("Chiusa", events[5].Text);
+    }
+
+    [Fact]
+    public void Notes_need_a_running_activity_and_non_empty_text()
+    {
+        using var s = new TimeStore(Database.Open(":memory:"));
+        var tracker = new ActivityTracker(s);
+        Assert.Null(tracker.AddNote("niente in corso"));
+        tracker.Start("A", s.GetCategories()[0].Id);
+        Assert.Null(tracker.AddNote("   "));
+        Assert.NotNull(tracker.AddNote("ok"));
+    }
+
+    [Fact]
+    public void Notes_can_be_deleted_and_cascade_with_the_activity()
+    {
+        using var s = new TimeStore(Database.Open(":memory:"));
+        var tracker = new ActivityTracker(s);
+        var a = tracker.Start("A", s.GetCategories()[0].Id);
+        var n1 = tracker.AddNote("uno")!;
+        tracker.AddNote("due");
+        s.DeleteNote(n1.Id);
+        Assert.Equal("due", Assert.Single(s.GetNotes(a.Id)).Text);
+        s.DeleteActivity(a.Id);
+        Assert.Empty(s.GetNotes(a.Id));
+    }
+
+    [Fact]
+    public void Day_log_appears_in_csv_and_summary()
+    {
+        using var s = new TimeStore(Database.Open(":memory:"));
+        var t = Day9.ToUniversalTime();
+        var tracker = new ActivityTracker(s, () => t);
+        tracker.Start("Deploy VM", s.GetCategories()[0].Id);
+        t = t.AddMinutes(20);
+        tracker.AddNote("aperto ticket");
+        t = t.AddMinutes(10);
+        tracker.Finish();
+
+        var rows = Reporting.BuildRows(s, Day9.Date, Day9.Date.AddDays(1), t);
+        Assert.Equal("09:20 aperto ticket", rows[0].Log);
+        Assert.Contains(";09:20 aperto ticket;", Reporting.ToCsv(rows));
+        Assert.Contains("| 09:20 aperto ticket", Reporting.ToSummaryText(rows, 15));
+    }
+}

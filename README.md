@@ -7,6 +7,8 @@ Post-it per Windows 11 che traccia le attività della giornata lavorativa e aiut
   Avviandone un'altra la precedente va **in pausa** e compare come **riquadro rosso**: un clic la riprende (nuova
   sessione sulla *stessa* attività). Una sola attività accumula tempo alla volta; solo **✔ Fine** chiude davvero.
   Nello storico c'è **una riga per attività e per giorno** con il tempo reale totale, comunque tu l'abbia interrotta.
+- **Diario con orario:** sotto il cronometro scrivi note (Invio) e nello Storico (🕘 Timeline) vedi la storia
+  dell'attività: avvio, note, pause, riprese, chiusura. Le note del giorno finiscono nel riepilogo e nel CSV.
 - **Notifica Windows ogni 5 minuti** con l'attività in corso (pulsanti *Termina* / *Apri*).
 - **Screenshot** allegati all'attività in corso (ritaglio di Windows, oppure Ctrl+V dagli appunti).
 - **Storico**: per attività, giorno/settimana/mese, totali per cliente/categoria/giorno, arrotondamento (5–30 min),

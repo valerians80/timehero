@@ -82,6 +82,10 @@ public sealed class HistoryWindow : Window
         DockPanel.SetDock(bottom, Dock.Bottom);
         bottom.Children.Add(Ui.Btn("+ Aggiungi", (_, _) => AddManual(), Ui.Go));
         bottom.Children.Add(Ui.Btn("Modifica", (_, _) => EditSelected()));
+        bottom.Children.Add(Ui.Btn("🕘 Timeline", (_, _) =>
+        {
+            if (_grid.SelectedItem is HistRow row) _app.ShowTimeline(row.Src.ActivityId);
+        }, tooltip: "Storia dell'attività selezionata: avvio, note con orario, pause e riprese"));
         bottom.Children.Add(Ui.Btn("📋 Copia riepilogo", (_, _) => CopySummary(), tooltip: "Riepilogo per giorno/cliente/categoria da incollare nel timesheet"));
         bottom.Children.Add(Ui.Btn("💾 Esporta CSV", (_, _) => ExportCsv()));
         root.Children.Add(bottom);
@@ -135,39 +139,7 @@ public sealed class HistoryWindow : Window
         _grid.AutoGenerateColumns = false;
         _grid.IsReadOnly = true;
         _grid.SelectionMode = DataGridSelectionMode.Single;
-        _grid.Background = Ui.Surface;
-        _grid.RowBackground = Ui.Surface;
-        _grid.AlternatingRowBackground = Ui.RowAlt;
-        _grid.Foreground = Ui.Fg;
-        _grid.BorderBrush = Ui.Border;
-        _grid.GridLinesVisibility = DataGridGridLinesVisibility.None;
-        _grid.HeadersVisibility = DataGridHeadersVisibility.Column;
-        _grid.RowHeight = 28;
-
-        var header = new Style(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader));
-        header.Setters.Add(new Setter(Control.BackgroundProperty, Ui.Surface2));
-        header.Setters.Add(new Setter(Control.ForegroundProperty, Ui.Subtle));
-        header.Setters.Add(new Setter(Control.BorderBrushProperty, Ui.Border));
-        header.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0, 0, 0, 1)));
-        header.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(8, 6, 8, 6)));
-        header.Setters.Add(new Setter(Control.FontWeightProperty, FontWeights.SemiBold));
-        _grid.ColumnHeaderStyle = header;
-
-        var cell = new Style(typeof(DataGridCell));
-        cell.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
-        cell.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(8, 0, 8, 0)));
-        cell.Setters.Add(new Setter(Control.VerticalContentAlignmentProperty, VerticalAlignment.Center));
-        var cellSel = new Trigger { Property = DataGridCell.IsSelectedProperty, Value = true };
-        cellSel.Setters.Add(new Setter(Control.BackgroundProperty, Ui.AccentDim));
-        cellSel.Setters.Add(new Setter(Control.ForegroundProperty, Ui.Fg));
-        cell.Triggers.Add(cellSel);
-        _grid.CellStyle = cell;
-
-        var row = new Style(typeof(DataGridRow));
-        var rowSel = new Trigger { Property = DataGridRow.IsSelectedProperty, Value = true };
-        rowSel.Setters.Add(new Setter(Control.BackgroundProperty, Ui.AccentDim));
-        row.Triggers.Add(rowSel);
-        _grid.RowStyle = row;
+        Ui.StyleGrid(_grid);
         _grid.MouseDoubleClick += (_, _) => EditSelected();
 
         void Col(string header, string path, double width = double.NaN)

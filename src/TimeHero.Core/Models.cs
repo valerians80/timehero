@@ -8,6 +8,9 @@ public record Category(long Id, string Name, string Color, int SortOrder, bool A
 
 public record Attachment(long Id, long ActivityId, string FilePath, DateTime CreatedUtc);
 
+/// <summary>Una nota con orario: il "diario" dell'attività, da cui si ricostruisce la cronologia.</summary>
+public record ActivityNote(long Id, long ActivityId, DateTime CreatedUtc, string Text);
+
 /// <summary>Una sessione di lavoro su un'attività. EndUtc == null significa "in corso". Orari UTC.</summary>
 public record Segment(long Id, long ActivityId, DateTime StartUtc, DateTime? EndUtc)
 {

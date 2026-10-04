@@ -119,5 +119,43 @@ internal static class Ui
         return p;
     }
 
+    /// <summary>Tabella scura: righe alternate, intestazioni grigie, selezione blu.</summary>
+    public static void StyleGrid(DataGrid g)
+    {
+        g.Background = Surface;
+        g.RowBackground = Surface;
+        g.AlternatingRowBackground = RowAlt;
+        g.Foreground = Fg;
+        g.BorderBrush = Border;
+        g.GridLinesVisibility = DataGridGridLinesVisibility.None;
+        g.HeadersVisibility = DataGridHeadersVisibility.Column;
+        g.RowHeight = 28;
+
+        var header = new Style(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader));
+        header.Setters.Add(new Setter(Control.BackgroundProperty, Surface2));
+        header.Setters.Add(new Setter(Control.ForegroundProperty, Subtle));
+        header.Setters.Add(new Setter(Control.BorderBrushProperty, Border));
+        header.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0, 0, 0, 1)));
+        header.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(8, 6, 8, 6)));
+        header.Setters.Add(new Setter(Control.FontWeightProperty, FontWeights.SemiBold));
+        g.ColumnHeaderStyle = header;
+
+        var cell = new Style(typeof(DataGridCell));
+        cell.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
+        cell.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(8, 0, 8, 0)));
+        cell.Setters.Add(new Setter(Control.VerticalContentAlignmentProperty, VerticalAlignment.Center));
+        var cellSel = new Trigger { Property = DataGridCell.IsSelectedProperty, Value = true };
+        cellSel.Setters.Add(new Setter(Control.BackgroundProperty, AccentDim));
+        cellSel.Setters.Add(new Setter(Control.ForegroundProperty, Fg));
+        cell.Triggers.Add(cellSel);
+        g.CellStyle = cell;
+
+        var row = new Style(typeof(DataGridRow));
+        var rowSel = new Trigger { Property = DataGridRow.IsSelectedProperty, Value = true };
+        rowSel.Setters.Add(new Setter(Control.BackgroundProperty, AccentDim));
+        row.Triggers.Add(rowSel);
+        g.RowStyle = row;
+    }
+
     public static string Hms(TimeSpan t) => $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}";
 }

@@ -85,6 +85,14 @@ public sealed class TrayApp : IDisposable
         _history.Reload();
     }
 
+    /// <summary>Apre la timeline (diario con orari) di un'attività.</summary>
+    public void ShowTimeline(long activityId)
+    {
+        var w = new TimelineWindow(Store, activityId);
+        w.Show();
+        w.Activate();
+    }
+
     public void ShowSettings()
     {
         if (_settings is null)

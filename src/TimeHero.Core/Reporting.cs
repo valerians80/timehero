@@ -11,7 +11,7 @@ namespace TimeHero.Core;
 public record TimesheetRow(
     long ActivityId, DateOnly Date, DateTime Start, DateTime End, TimeSpan Duration,
     string Title, string Category, string? Client, string People, string? Notes, bool Billable, int Attachments,
-    bool Running, string Status);
+    bool Running, string Status, string? Log = null);
 
 public record SummaryLine(string Key, TimeSpan Total);
 
@@ -61,10 +61,21 @@ public static class Reporting
                     a.ClientId is { } cid ? clients.GetValueOrDefault(cid) : null,
                     string.Join(", ", a.PersonIds.Select(id => people.GetValueOrDefault(id, "?"))),
                     a.Notes, a.Billable, store.GetAttachments(a.Id).Count,
-                    running, a.IsClosed ? "chiusa" : running ? "in corso" : "in pausa");
+                    running, a.IsClosed ? "chiusa" : running ? "in corso" : "in pausa",
+                    DayLog(store.GetNotes(a.Id), g.Key.Day));
             })
             .OrderBy(r => r.Start)
             .ToList();
+    }
+
+    /// <summary>Le note con orario scritte quel giorno, in una riga: "10:42 chiamato il cliente; 11:05 ...".</summary>
+    private static string? DayLog(IEnumerable<ActivityNote> notes, DateOnly day)
+    {
+        var lines = notes
+            .Where(n => DateOnly.FromDateTime(n.CreatedUtc.ToLocalTime()) == day)
+            .Select(n => $"{n.CreatedUtc.ToLocalTime():HH:mm} {n.Text.ReplaceLineEndings(" ")}")
+            .ToList();
+        return lines.Count == 0 ? null : string.Join("; ", lines);
     }
 
     public static List<SummaryLine> SummarizeBy(IEnumerable<TimesheetRow> rows, Func<TimesheetRow, string> key,
@@ -81,14 +92,14 @@ public static class Reporting
     {
         var it = CultureInfo.GetCultureInfo("it-IT");
         var sb = new StringBuilder();
-        sb.AppendLine("Data;Inizio;Fine;Durata (min);Durata (ore);Attività;Categoria;Cliente;Colleghi;Note;Fatturabile;Stato;Allegati");
+        sb.AppendLine("Data;Inizio;Fine;Durata (min);Durata (ore);Attività;Categoria;Cliente;Colleghi;Note;Cronologia;Fatturabile;Stato;Allegati");
         foreach (var r in rows)
         {
             var d = Round(r.Duration, roundMinutes);
             sb.AppendLine(string.Join(';',
                 r.Date.ToString("dd/MM/yyyy", it), r.Start.ToString("HH:mm"), r.End.ToString("HH:mm"),
                 ((int)Math.Round(d.TotalMinutes)).ToString(it), d.TotalHours.ToString("0.00", it),
-                Esc(r.Title), Esc(r.Category), Esc(r.Client), Esc(r.People), Esc(r.Notes),
+                Esc(r.Title), Esc(r.Category), Esc(r.Client), Esc(r.People), Esc(r.Notes), Esc(r.Log),
                 r.Billable ? "sì" : "no", r.Status, r.Attachments.ToString(it)));
         }
         return sb.ToString();
@@ -112,7 +123,7 @@ public static class Reporting
                     g.Key.Title,
                     g.Key.Category,
                     Total = Round(TimeSpan.FromTicks(g.Sum(r => r.Duration.Ticks)), roundMinutes),
-                    Notes = g.Select(r => r.Notes).Where(n => !string.IsNullOrWhiteSpace(n))
+                    Notes = g.SelectMany(r => new[] { r.Notes, r.Log }).Where(n => !string.IsNullOrWhiteSpace(n))
                              .Select(n => n!.Trim()).Distinct().ToList(),
                 })
                 .OrderBy(l => l.Client).ThenBy(l => l.Title)

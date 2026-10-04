@@ -119,6 +119,15 @@ public sealed class ActivityTracker
         Changed?.Invoke();
     }
 
+    /// <summary>Aggiunge una nota con l'orario attuale all'attività in corso (nessun evento di cambio stato).</summary>
+    public ActivityNote? AddNote(string text)
+    {
+        if (Current is null || string.IsNullOrWhiteSpace(text)) return null;
+        var now = _clock();
+        var id = _store.AddNote(Current.Id, text, now);
+        return new ActivityNote(id, Current.Id, now, text.Trim());
+    }
+
     /// <summary>Salva titolo/cliente/colleghi/note modificati (non cambia lo stato, nessun evento).</summary>
     public void UpdateDetails(Activity a) => _store.UpdateActivity(a);
 

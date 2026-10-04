@@ -67,6 +67,12 @@ public static class Database
             ActivityId INTEGER NOT NULL REFERENCES Activities(Id) ON DELETE CASCADE,
             StartUtc TEXT NOT NULL,
             EndUtc TEXT);
+        CREATE TABLE IF NOT EXISTS ActivityNotes (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ActivityId INTEGER NOT NULL REFERENCES Activities(Id) ON DELETE CASCADE,
+            CreatedUtc TEXT NOT NULL,
+            Text TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS IX_Notes_Activity ON ActivityNotes(ActivityId);
         CREATE INDEX IF NOT EXISTS IX_Segments_Start ON ActivitySegments(StartUtc);
         CREATE INDEX IF NOT EXISTS IX_Segments_Activity ON ActivitySegments(ActivityId);
         CREATE TABLE IF NOT EXISTS ActivityPeople (
