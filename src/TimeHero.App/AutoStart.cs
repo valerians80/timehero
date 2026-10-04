@@ -21,7 +21,20 @@ public static class AutoStart
     {
         using var k = Registry.CurrentUser.OpenSubKey(RunKey, writable: true)
                       ?? Registry.CurrentUser.CreateSubKey(RunKey);
-        if (enabled && Environment.ProcessPath is { } exe) k.SetValue(ValueName, $"\"{exe}\"");
+        if (enabled && Environment.ProcessPath is { } exe) k.SetValue(ValueName, BuildCommand(exe));
         else k.DeleteValue(ValueName, throwOnMissingValue: false);
+    }
+
+    /// <summary>
+    /// Se l'app gira come "dotnet TimeHero.dll" (exe non eseguibile, es. bloccato da policy aziendali)
+    /// il processo è dotnet.exe: serve rilanciare dotnet con la DLL, in una finestra nascosta.
+    /// </summary>
+    private static string BuildCommand(string processPath)
+    {
+        if (!Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            return $"\"{processPath}\"";
+
+        var dll = typeof(AutoStart).Assembly.Location;
+        return $"powershell.exe -NoProfile -WindowStyle Hidden -Command \"& '{processPath}' '{dll}'\"";
     }
 }
