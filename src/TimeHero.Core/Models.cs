@@ -10,6 +10,11 @@ public record Category(long Id, string Name, string Color, int SortOrder, bool A
 /// <param name="Kind">"image" (screenshot) oppure "audio" (registrazione OBS).</param>
 public record Attachment(long Id, long ActivityId, string FilePath, DateTime CreatedUtc, string Kind = "image");
 
+/// <summary>La trascrizione (o l'errore) di una registrazione audio allegata a un'attività.</summary>
+/// <param name="Status">"done" oppure "error".</param>
+public record Transcript(long Id, long ActivityId, long AttachmentId, DateTime CreatedUtc, string Model,
+    string? Text, string Status, string? Error);
+
 /// <summary>Una nota con orario: il "diario" dell'attività, da cui si ricostruisce la cronologia.</summary>
 public record ActivityNote(long Id, long ActivityId, DateTime CreatedUtc, string Text);
 

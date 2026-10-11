@@ -221,4 +221,20 @@ public class RecorderTests
         Assert.True(r.Obs.Recording);
         Assert.Null(r.Rec.Message);
     }
+
+    [Fact]
+    public async Task Saved_recording_raises_AudioSaved_with_the_attachment_id()
+    {
+        using var r = new Rig();
+        var saved = new List<long>();
+        r.Rec.AudioSaved += id => saved.Add(id);
+
+        var a = r.Tracker.Start("Call", r.Calls);
+        await Rig.Until(() => r.Rec.IsRecording, "rec");
+        r.Tracker.Pause();
+        await Rig.Until(() => saved.Count == 1, "AudioSaved");
+
+        var att = Assert.Single(r.Store.GetAttachments(a.Id));
+        Assert.Equal(att.Id, saved[0]);
+    }
 }

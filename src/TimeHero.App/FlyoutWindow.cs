@@ -361,6 +361,8 @@ public sealed class FlyoutWindow : Window
             var parts = new List<string>();
             if (images > 0) parts.Add(images == 1 ? "📎 1 allegato" : $"📎 {images} allegati");
             if (audio > 0) parts.Add(audio == 1 ? "🎙 1 registrazione" : $"🎙 {audio} registrazioni");
+            if (_app.Transcriber.IsBusyFor(cur.Id)) parts.Add("◌ trascrizione in corso");
+            else if (Store.GetTranscripts(cur.Id).Any(t => t.Status == "done")) parts.Add("📄 trascritta");
             _attach.Text = string.Join("  ·  ", parts);
             ShowLastNote(Store.GetNotes(cur.Id));
             _curClosed = TimeSpan.FromTicks(cur.Segments.Where(s => s.EndUtc is not null)

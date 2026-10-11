@@ -74,6 +74,15 @@ public static class Database
             CreatedUtc TEXT NOT NULL,
             Text TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS IX_Notes_Activity ON ActivityNotes(ActivityId);
+        CREATE TABLE IF NOT EXISTS Transcripts (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ActivityId INTEGER NOT NULL REFERENCES Activities(Id) ON DELETE CASCADE,
+            AttachmentId INTEGER NOT NULL UNIQUE REFERENCES Attachments(Id) ON DELETE CASCADE,
+            CreatedUtc TEXT NOT NULL,
+            Model TEXT NOT NULL,
+            Text TEXT,
+            Status TEXT NOT NULL,
+            Error TEXT);
         CREATE INDEX IF NOT EXISTS IX_Segments_Start ON ActivitySegments(StartUtc);
         CREATE INDEX IF NOT EXISTS IX_Segments_Activity ON ActivitySegments(ActivityId);
         CREATE TABLE IF NOT EXISTS ActivityPeople (

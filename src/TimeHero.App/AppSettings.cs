@@ -35,25 +35,42 @@ public sealed class AppSettings
     public bool ObsKeepReady { get => GetBool("obsKeepReady", false); set => SetBool("obsKeepReady", value); }
 
     /// <summary>Password del WebSocket, salvata cifrata con DPAPI (leggibile solo dal tuo utente su questo PC).</summary>
-    public string ObsPassword
+    public string ObsPassword { get => Secret("obsPassword"); set => SetSecret("obsPassword", value); }
+
+    // ---------- trascrizione con Azure OpenAI ----------
+    public string AzureEndpoint { get => _store.GetSetting("azEndpoint") ?? ""; set => _store.SetSetting("azEndpoint", value); }
+    public string AzureDeployment { get => _store.GetSetting("azDeployment") ?? ""; set => _store.SetSetting("azDeployment", value); }
+    public string AzureApiVersion { get => _store.GetSetting("azApiVersion") ?? "2025-03-01-preview"; set => _store.SetSetting("azApiVersion", value); }
+    public string AzureLanguage { get => _store.GetSetting("azLanguage") ?? "it"; set => _store.SetSetting("azLanguage", value); }
+
+    /// <summary>"key" (chiave API) oppure "entra" (accesso con l'account Microsoft).</summary>
+    public string AzureAuth { get => _store.GetSetting("azAuth") ?? "key"; set => _store.SetSetting("azAuth", value); }
+    public string AzureTenant { get => _store.GetSetting("azTenant") ?? ""; set => _store.SetSetting("azTenant", value); }
+    public string AzureKey { get => Secret("azKey"); set => SetSecret("azKey", value); }
+
+    /// <summary>Trascrivi da sola ogni registrazione appena finita.</summary>
+    public bool AutoTranscribe { get => GetBool("autoTranscribe", true); set => SetBool("autoTranscribe", value); }
+
+    /// <summary>Record di autenticazione Entra serializzato: evita di rifare l'accesso a ogni avvio.</summary>
+    public string AzureAuthRecord { get => _store.GetSetting("azAuthRecord") ?? ""; set => _store.SetSetting("azAuthRecord", value); }
+
+    private string Secret(string key)
     {
-        get
+        var raw = _store.GetSetting(key);
+        if (string.IsNullOrEmpty(raw)) return "";
+        try
         {
-            var raw = _store.GetSetting("obsPassword");
-            if (string.IsNullOrEmpty(raw)) return "";
-            try
-            {
-                return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(raw), null, DataProtectionScope.CurrentUser));
-            }
-            catch
-            {
-                return "";
-            }
+            return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(raw), null, DataProtectionScope.CurrentUser));
         }
-        set => _store.SetSetting("obsPassword", string.IsNullOrEmpty(value)
-            ? ""
-            : Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser)));
+        catch
+        {
+            return "";
+        }
     }
+
+    private void SetSecret(string key, string value) => _store.SetSetting(key, string.IsNullOrEmpty(value)
+        ? ""
+        : Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser)));
 
     private int Get(string key, int def) => int.TryParse(_store.GetSetting(key), out var v) ? v : def;
     private void Set(string key, int value) => _store.SetSetting(key, value.ToString());

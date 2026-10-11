@@ -351,6 +351,51 @@ public sealed class TimeStore : IDisposable
         return list;
     }
 
+    public Attachment? GetAttachment(long id)
+    {
+        using var c = Cmd("SELECT Id, ActivityId, FilePath, CreatedUtc, Kind FROM Attachments WHERE Id = $i", ("$i", id));
+        using var r = c.ExecuteReader();
+        return r.Read()
+            ? new Attachment(r.GetInt64(0), r.GetInt64(1), r.GetString(2), ParseUtc(r.GetString(3)), r.GetString(4))
+            : null;
+    }
+
+    // ---------- trascrizioni ----------
+    /// <summary>Salva (o sostituisce) la trascrizione di una registrazione; una sola riga per allegato.</summary>
+    public long SaveTranscript(long attachmentId, long activityId, string model, string? text, string status, string? error)
+    {
+        using (var c = Cmd("INSERT INTO Transcripts (ActivityId, AttachmentId, CreatedUtc, Model, Text, Status, Error) " +
+                           "VALUES ($a, $at, $c, $m, $t, $s, $e) " +
+                           "ON CONFLICT(AttachmentId) DO UPDATE SET CreatedUtc = $c, Model = $m, Text = $t, Status = $s, Error = $e",
+                   ("$a", activityId), ("$at", attachmentId), ("$c", Iso(DateTime.UtcNow)), ("$m", model),
+                   ("$t", text), ("$s", status), ("$e", error)))
+            c.ExecuteNonQuery();
+        using var sel = Cmd("SELECT Id FROM Transcripts WHERE AttachmentId = $at", ("$at", attachmentId));
+        return (long)sel.ExecuteScalar()!;
+    }
+
+    private static Transcript ReadTranscript(SqliteDataReader r) => new(
+        r.GetInt64(0), r.GetInt64(1), r.GetInt64(2), ParseUtc(r.GetString(3)), r.GetString(4),
+        r.IsDBNull(5) ? null : r.GetString(5), r.GetString(6), r.IsDBNull(7) ? null : r.GetString(7));
+
+    private const string TranscriptColumns = "Id, ActivityId, AttachmentId, CreatedUtc, Model, Text, Status, Error";
+
+    public List<Transcript> GetTranscripts(long activityId)
+    {
+        using var c = Cmd($"SELECT {TranscriptColumns} FROM Transcripts WHERE ActivityId = $a ORDER BY CreatedUtc", ("$a", activityId));
+        var list = new List<Transcript>();
+        using var r = c.ExecuteReader();
+        while (r.Read()) list.Add(ReadTranscript(r));
+        return list;
+    }
+
+    public Transcript? GetTranscript(long id)
+    {
+        using var c = Cmd($"SELECT {TranscriptColumns} FROM Transcripts WHERE Id = $i", ("$i", id));
+        using var r = c.ExecuteReader();
+        return r.Read() ? ReadTranscript(r) : null;
+    }
+
     // ---------- note (diario dell'attività) ----------
     public long AddNote(long activityId, string text, DateTime? createdUtc = null)
     {

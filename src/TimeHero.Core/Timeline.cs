@@ -1,9 +1,9 @@
 namespace TimeHero.Core;
 
 /// <summary>Un fatto della vita di un'attività: avvio, ripresa, nota, pausa, chiusura.</summary>
-public record TimelineEvent(DateTime WhenUtc, TimelineKind Kind, string Text, long? NoteId = null);
+public record TimelineEvent(DateTime WhenUtc, TimelineKind Kind, string Text, long? NoteId = null, long? TranscriptId = null);
 
-public enum TimelineKind { Start, Resume, Note, Pause, Close }
+public enum TimelineKind { Start, Resume, Note, Transcript, Pause, Close }
 
 public static class Timeline
 {
@@ -11,7 +11,8 @@ public static class Timeline
     /// Ricostruisce in ordine cronologico la storia di un'attività: quando è partita, ogni nota scritta,
     /// ogni pausa (con la durata della sessione), ogni ripresa e l'eventuale chiusura.
     /// </summary>
-    public static List<TimelineEvent> Build(Activity a, IEnumerable<ActivityNote> notes, DateTime? nowUtc = null)
+    public static List<TimelineEvent> Build(Activity a, IEnumerable<ActivityNote> notes,
+        IEnumerable<Transcript>? transcripts = null, DateTime? nowUtc = null)
     {
         var now = nowUtc ?? DateTime.UtcNow;
         var events = new List<TimelineEvent>();
@@ -32,11 +33,19 @@ public static class Timeline
 
         foreach (var n in notes) events.Add(new TimelineEvent(n.CreatedUtc, TimelineKind.Note, n.Text, n.Id));
 
+        foreach (var t in transcripts ?? Enumerable.Empty<Transcript>())
+        {
+            var words = string.IsNullOrWhiteSpace(t.Text) ? 0 : t.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+            events.Add(new TimelineEvent(t.CreatedUtc, TimelineKind.Transcript,
+                t.Status == "done" ? $"Trascrizione pronta ({words} parole) — apri per leggerla" : $"Trascrizione non riuscita: {t.Error}",
+                null, t.Id));
+        }
+
         // a parità di orario: prima l'avvio, poi le note, poi la pausa/chiusura
         static int Order(TimelineKind k) => k switch
         {
             TimelineKind.Start or TimelineKind.Resume => 0,
-            TimelineKind.Note => 1,
+            TimelineKind.Note or TimelineKind.Transcript => 1,
             _ => 2,
         };
         return events.OrderBy(e => e.WhenUtc).ThenBy(e => Order(e.Kind)).ToList();
@@ -47,6 +56,7 @@ public static class Timeline
         TimelineKind.Start => "▶",
         TimelineKind.Resume => "▶",
         TimelineKind.Note => "📝",
+        TimelineKind.Transcript => "📄",
         TimelineKind.Pause => "⏸",
         _ => "✔",
     };

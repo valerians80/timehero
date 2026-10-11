@@ -62,6 +62,7 @@ public sealed class SettingsWindow : Window
                 "Disattiva", "Le categorie sono i pulsanti di avvio rapido nel post-it.")
         });
         tabs.Items.Add(new TabItem { Header = "Registrazione", Content = BuildObs() });
+        tabs.Items.Add(new TabItem { Header = "Trascrizione", Content = BuildTranscription() });
         Content = tabs;
     }
 
@@ -149,6 +150,154 @@ public sealed class SettingsWindow : Window
         p.Children.Add(help);
 
         return new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = p };
+    }
+
+    // ---------- trascrizione con Azure OpenAI ----------
+    private readonly TextBox _azEndpoint = Ui.Input();
+    private readonly TextBox _azDeployment = Ui.Input();
+    private readonly TextBox _azApiVersion = Ui.Input();
+    private readonly TextBox _azLanguage = Ui.Input();
+    private readonly ComboBox _azAuth = new() { FontSize = 12 };
+    private readonly PasswordBox _azKey = new()
+    {
+        FontSize = 12, Padding = new Thickness(4, 4, 4, 4), Background = Ui.Surface, Foreground = Ui.Fg,
+        BorderBrush = Ui.Border, CaretBrush = Ui.Fg,
+    };
+    private readonly TextBox _azTenant = Ui.Input();
+    private readonly CheckBox _azAuto = new() { Content = "Trascrivi in automatico appena finisce la registrazione", Margin = new Thickness(0, 10, 0, 0) };
+    private readonly TextBlock _azResult = Ui.Text("", 11, fg: Ui.Subtle);
+    private StackPanel _azKeyField = null!;
+    private StackPanel _azTenantField = null!;
+
+    private UIElement BuildTranscription()
+    {
+        var st = _app.Settings;
+        _azEndpoint.Text = st.AzureEndpoint;
+        _azDeployment.Text = st.AzureDeployment;
+        _azApiVersion.Text = st.AzureApiVersion;
+        _azLanguage.Text = st.AzureLanguage;
+        _azAuth.ItemsSource = new[] { "Chiave API", "Account Microsoft (Entra ID)" };
+        _azAuth.SelectedIndex = st.AzureAuth == "entra" ? 1 : 0;
+        _azKey.Password = st.AzureKey;
+        _azTenant.Text = st.AzureTenant;
+        _azAuto.IsChecked = st.AutoTranscribe;
+
+        var p = new StackPanel { Margin = new Thickness(14) };
+        p.Children.Add(Ui.Text("Azure OpenAI — modello di trascrizione (Whisper o gpt-4o-transcribe)", 11, fg: Ui.Subtle));
+        p.Children.Add(Ui.Field("Endpoint (es. https://nome-risorsa.openai.azure.com)", _azEndpoint));
+        p.Children.Add(Ui.Field("Nome del deployment", _azDeployment));
+
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
+        var ver = Ui.Field("Versione API", _azApiVersion);
+        var lang = Ui.Field("Lingua", _azLanguage);
+        lang.Margin = new Thickness(8, 6, 0, 0);
+        Grid.SetColumn(lang, 1);
+        row.Children.Add(ver);
+        row.Children.Add(lang);
+        p.Children.Add(row);
+
+        p.Children.Add(Ui.Field("Autenticazione", _azAuth));
+        _azKeyField = Ui.Field("Chiave API della risorsa", _azKey);
+        _azTenantField = Ui.Field("Tenant (facoltativo, ID o dominio)", _azTenant);
+        p.Children.Add(_azKeyField);
+        p.Children.Add(_azTenantField);
+        _azAuth.SelectionChanged += (_, _) => UpdateAzureFields();
+        UpdateAzureFields();
+        p.Children.Add(_azAuto);
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(Ui.Btn("Salva", (_, _) => SaveAzure(), Ui.Go));
+        buttons.Children.Add(Ui.Btn("Prova connessione", async (_, _) => await TestAzureAsync(),
+            tooltip: "Invia 1 secondo di silenzio al deployment per verificare endpoint, nome, versione e accesso"));
+        p.Children.Add(buttons);
+        _azResult.Margin = new Thickness(2, 10, 0, 0);
+        p.Children.Add(_azResult);
+
+        var help = Ui.Text(
+            "Cose da sapere:\n" +
+            "• Formato: Azure accetta mp4, m4a, mp3, wav, webm… ma non mkv. In OBS imposta Registrazione → Formato: mp4 (o \"mp4 frammentato\").\n" +
+            "• Dimensione: massimo 25 MB per file (circa 50 minuti a 64 kbps mono). Per chiamate più lunghe abbassa il bitrate " +
+            "o metti in pausa a metà per ottenere due file.\n" +
+            "• Con Entra ID serve il ruolo \"Cognitive Services OpenAI User\" sulla risorsa; il primo accesso apre il browser.\n" +
+            "• Il file audio viene inviato alla tua risorsa Azure OpenAI; il testo resta nel database di TimeHero, sul tuo PC.", 10.5, fg: Ui.Subtle);
+        help.Margin = new Thickness(2, 16, 0, 0);
+        p.Children.Add(help);
+
+        return new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = p };
+    }
+
+    private void UpdateAzureFields()
+    {
+        var entra = _azAuth.SelectedIndex == 1;
+        _azKeyField.Visibility = entra ? Visibility.Collapsed : Visibility.Visible;
+        _azTenantField.Visibility = entra ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ApplyAzureFields()
+    {
+        var st = _app.Settings;
+        st.AzureEndpoint = _azEndpoint.Text.Trim();
+        st.AzureDeployment = _azDeployment.Text.Trim();
+        st.AzureApiVersion = string.IsNullOrWhiteSpace(_azApiVersion.Text) ? "2025-03-01-preview" : _azApiVersion.Text.Trim();
+        st.AzureLanguage = _azLanguage.Text.Trim();
+        var newAuth = _azAuth.SelectedIndex == 1 ? "entra" : "key";
+        if (newAuth != st.AzureAuth || _azTenant.Text.Trim() != st.AzureTenant) _app.Transcriber.ResetSignIn();
+        st.AzureAuth = newAuth;
+        st.AzureKey = _azKey.Password;
+        st.AzureTenant = _azTenant.Text.Trim();
+        st.AutoTranscribe = _azAuto.IsChecked == true;
+    }
+
+    private void SaveAzure()
+    {
+        ApplyAzureFields();
+        _azResult.Foreground = Ui.Fg;
+        _azResult.Text = _app.Transcriber.IsConfigured
+            ? "Impostazioni di trascrizione salvate."
+            : "Salvato, ma mancano dei dati: servono endpoint, deployment e chiave (o accesso Entra ID).";
+    }
+
+    /// <summary>Un secondo di silenzio in formato WAV (16 kHz, mono, 16 bit): basta per provare l'intera catena.</summary>
+    private static byte[] SilentWav()
+    {
+        const int rate = 16000, seconds = 1, dataLen = rate * seconds * 2;
+        using var ms = new System.IO.MemoryStream();
+        using var w = new System.IO.BinaryWriter(ms);
+        w.Write("RIFF"u8.ToArray()); w.Write(36 + dataLen); w.Write("WAVE"u8.ToArray());
+        w.Write("fmt "u8.ToArray()); w.Write(16); w.Write((short)1); w.Write((short)1);
+        w.Write(rate); w.Write(rate * 2); w.Write((short)2); w.Write((short)16);
+        w.Write("data"u8.ToArray()); w.Write(dataLen); w.Write(new byte[dataLen]);
+        return ms.ToArray();
+    }
+
+    private async Task TestAzureAsync()
+    {
+        ApplyAzureFields();
+        _azResult.Foreground = Ui.Subtle;
+        _azResult.Text = _azAuth.SelectedIndex == 1
+            ? "Connessione ad Azure… (al primo accesso si apre il browser per il login)"
+            : "Connessione ad Azure…";
+        var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"timehero_test_{Guid.NewGuid():N}.wav");
+        try
+        {
+            System.IO.File.WriteAllBytes(tmp, SilentWav());
+            var options = _app.Transcriber.BuildOptions();
+            if (!options.IsConfigured) throw new TranscriptionException("Compila endpoint, deployment e chiave (o scegli Entra ID).");
+            await new AzureTranscriber().TranscribeAsync(tmp, options);
+            _azResult.Foreground = Ui.Hex("#7BD88F");
+            _azResult.Text = $"✔ Il deployment \"{options.Deployment}\" ha risposto: endpoint, nome e accesso sono corretti.";
+        }
+        catch (Exception ex)
+        {
+            _azResult.Foreground = Ui.Hex("#FF8A80");
+            _azResult.Text = "✖ " + ex.Message;
+        }
+        finally
+        {
+            try { System.IO.File.Delete(tmp); } catch { /* ok */ }
+        }
     }
 
     private void ApplyObsFields()

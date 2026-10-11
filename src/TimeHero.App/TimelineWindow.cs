@@ -11,7 +11,8 @@ public sealed class TimelineWindow : Window
 {
     private static readonly CultureInfo It = CultureInfo.GetCultureInfo("it-IT");
 
-    private readonly TimeStore _store;
+    private readonly TrayApp _app;
+    private TimeStore _store => _app.Store;
     private readonly long _activityId;
     private readonly TextBlock _header = Ui.Text("", 15, true);
     private readonly TextBlock _summary = Ui.Text("", 11, fg: Ui.Subtle);
@@ -21,9 +22,9 @@ public sealed class TimelineWindow : Window
     private readonly TextBlock _error = Ui.Text("", 11, fg: Ui.Danger);
     private List<TimelineEvent> _events = new();
 
-    public TimelineWindow(TimeStore store, long activityId)
+    public TimelineWindow(TrayApp app, long activityId)
     {
-        _store = store;
+        _app = app;
         _activityId = activityId;
         Title = "TimeHero — timeline attività";
         Width = 620;
@@ -34,7 +35,13 @@ public sealed class TimelineWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         SourceInitialized += (_, _) => Theme.DarkTitleBar(this);
 
+        // la trascrizione arriva da un altro thread: aggiorna la finestra sul thread UI
+        Action onTranscribed = () => Dispatcher.BeginInvoke(new Action(Reload));
+        _app.Transcriber.Changed += onTranscribed;
+        Closed += (_, _) => _app.Transcriber.Changed -= onTranscribed;
+
         Ui.StyleGrid(_grid);
+        _grid.MouseDoubleClick += (_, _) => OpenSelectedTranscript();
         _grid.AutoGenerateColumns = false;
         _grid.IsReadOnly = true;
         _grid.SelectionMode = DataGridSelectionMode.Single;
@@ -77,7 +84,10 @@ public sealed class TimelineWindow : Window
         root.Children.Add(add);
 
         var bottomBar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
-        bottomBar.Children.Add(Ui.Btn("Elimina nota selezionata", (_, _) => DeleteSelectedNote(), Ui.Danger));
+        bottomBar.Children.Add(Ui.Btn("📄 Apri trascrizione", (_, _) => OpenSelectedTranscript(), tooltip: "Seleziona la riga della trascrizione (o doppio clic)"));
+        bottomBar.Children.Add(Ui.Btn("Trascrivi registrazioni", (_, _) => TranscribeAll(),
+            tooltip: "Invia ad Azure le registrazioni di questa attività non ancora trascritte (o fallite)"));
+        bottomBar.Children.Add(Ui.Btn("Elimina nota", (_, _) => DeleteSelectedNote(), Ui.Danger));
         bottomBar.Children.Add(_error);
         _error.Margin = new Thickness(10, 8, 0, 0);
         DockPanel.SetDock(bottomBar, Dock.Bottom);
@@ -101,7 +111,8 @@ public sealed class TimelineWindow : Window
         var a = _store.GetActivity(_activityId);
         if (a is null) { Close(); return; }
         var notes = _store.GetNotes(a.Id);
-        _events = Timeline.Build(a, notes);
+        var transcripts = _store.GetTranscripts(a.Id);
+        _events = Timeline.Build(a, notes, transcripts);
 
         var cat = _store.GetCategories(true).FirstOrDefault(c => c.Id == a.CategoryId)?.Name;
         var client = a.ClientId is { } cid ? _store.GetClients(true).FirstOrDefault(c => c.Id == cid)?.Name : null;
@@ -112,6 +123,9 @@ public sealed class TimelineWindow : Window
             $"tempo totale {Reporting.FormatHm(a.Duration())}",
             $"{a.Segments.Count} {(a.Segments.Count == 1 ? "sessione" : "sessioni")}",
             $"{notes.Count} {(notes.Count == 1 ? "nota" : "note")}",
+            _store.GetAttachments(a.Id).Count(x => x.Kind == "audio") is var rec and > 0
+                ? $"{rec} {(rec == 1 ? "registrazione" : "registrazioni")}"
+                : null,
             a.IsClosed ? "chiusa" : a.IsRunning ? "in corso" : "in pausa",
         }.Where(x => !string.IsNullOrEmpty(x)));
 
@@ -121,6 +135,7 @@ public sealed class TimelineWindow : Window
 
     private void AddNote()
     {
+        _error.Foreground = Ui.Danger;
         _error.Text = "";
         var text = _note.Text.Trim();
         if (text.Length == 0) return;
@@ -135,8 +150,37 @@ public sealed class TimelineWindow : Window
         Reload();
     }
 
+    private void OpenSelectedTranscript()
+    {
+        _error.Foreground = Ui.Danger;
+        _error.Text = "";
+        if (_grid.SelectedItem is not Row { Src.TranscriptId: { } id }) return;
+        var t = _store.GetTranscript(id);
+        if (t is null) return;
+        new TranscriptWindow(t, _store.GetActivity(_activityId)?.Title ?? "Attività").Show();
+    }
+
+    /// <summary>Mette in coda le registrazioni dell'attività che non hanno ancora una trascrizione riuscita.</summary>
+    private void TranscribeAll()
+    {
+        _error.Foreground = Ui.Danger;
+        _error.Text = "";
+        if (!_app.Transcriber.IsConfigured)
+        {
+            _error.Text = "Configura prima la trascrizione: ⚙ → Trascrizione.";
+            return;
+        }
+        var done = _store.GetTranscripts(_activityId).Where(t => t.Status == "done").Select(t => t.AttachmentId).ToHashSet();
+        var todo = _store.GetAttachments(_activityId).Where(a => a.Kind == "audio" && !done.Contains(a.Id)).ToList();
+        if (todo.Count == 0) { _error.Text = "Niente da trascrivere: tutte le registrazioni hanno già una trascrizione."; return; }
+        foreach (var a in todo) _app.Transcriber.Enqueue(a.Id, _activityId);
+        _error.Foreground = Ui.Fg;
+        _error.Text = $"In coda: {todo.Count} registrazione/i. Ti avviso quando è pronta.";
+    }
+
     private void DeleteSelectedNote()
     {
+        _error.Foreground = Ui.Danger;
         _error.Text = "";
         if (_grid.SelectedItem is not Row { Src.NoteId: { } id })
         {

@@ -13,6 +13,7 @@ public sealed class TrayApp : IDisposable
     public ActivityTracker Tracker { get; }
     public AppSettings Settings { get; }
     public ObsRecorder Recorder { get; }
+    public TranscriptionRunner Transcriber { get; }
 
     private readonly System.Windows.Forms.NotifyIcon _tray;
     private readonly FlyoutWindow _flyout;
@@ -31,6 +32,7 @@ public sealed class TrayApp : IDisposable
         Tracker = new ActivityTracker(Store);
         Settings = new AppSettings(Store);
         Recorder = new ObsRecorder(Store, Tracker, Settings);
+        Transcriber = new TranscriptionRunner(Settings);
 
         Notifier.Init(OnToastAction);
         _flyout = new FlyoutWindow(this);
@@ -65,6 +67,14 @@ public sealed class TrayApp : IDisposable
             UpdateTrayText();
             _flyout.RefreshRecording();
         };
+        // registrazione finita → trascrizione automatica (se configurata)
+        Recorder.AudioSaved += attachmentId =>
+        {
+            if (!Settings.AutoTranscribe || !Transcriber.IsConfigured) return;
+            if (Store.GetAttachment(attachmentId) is { } att) Transcriber.Enqueue(att.Id, att.ActivityId);
+        };
+        Transcriber.Changed += () =>
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(_flyout.Refresh));
 
         SystemEvents.SessionSwitch += OnSessionSwitch;
         _tick.Tick += (_, _) => OnTick();
@@ -97,7 +107,7 @@ public sealed class TrayApp : IDisposable
     /// <summary>Apre la timeline (diario con orari) di un'attività.</summary>
     public void ShowTimeline(long activityId)
     {
-        var w = new TimelineWindow(Store, activityId);
+        var w = new TimelineWindow(this, activityId);
         w.Show();
         w.Activate();
     }

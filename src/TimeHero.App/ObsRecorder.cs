@@ -49,6 +49,9 @@ public sealed class ObsRecorder
 
     public event Action? Changed;
 
+    /// <summary>Una registrazione è stata chiusa e allegata all'attività (id dell'allegato).</summary>
+    public event Action<long>? AudioSaved;
+
     // ---------- richieste dall'esterno ----------
     /// <summary>Da chiamare a ogni cambio di attività: porta lo stato della registrazione in linea con quello voluto.</summary>
     public void Reconcile()
@@ -206,7 +209,11 @@ public sealed class ObsRecorder
 
         if (!string.IsNullOrEmpty(path))
         {
-            try { _store.AddAttachment(activityId, path, "audio"); }
+            try
+            {
+                var attachmentId = _store.AddAttachment(activityId, path, "audio");
+                if (!_quiet) AudioSaved?.Invoke(attachmentId);
+            }
             catch (Exception ex) { error ??= $"File registrato ma non allegato: {ex.Message}"; }
         }
 
