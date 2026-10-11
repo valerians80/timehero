@@ -914,3 +914,45 @@ public class SpeechTranscriptionTests : IDisposable
         Assert.Contains("mp3", ex.Message);
     }
 }
+
+public class DeleteCascadeTests
+{
+    [Fact]
+    public void Deleting_an_activity_removes_sessions_notes_attachments_transcripts_and_people_links()
+    {
+        using var s = new TimeStore(Database.Open(":memory:"));
+        var person = s.GetOrAddPerson("Mario");
+        var tracker = new ActivityTracker(s);
+        var a = tracker.Start("Call", s.GetCategories()[1].Id, null, new[] { person });
+        tracker.AddNote("una nota");
+        var att = s.AddAttachment(a.Id, @"C:\Rec\call.mp4", "audio");
+        s.AddAttachment(a.Id, @"C:\Shots\shot.png");
+        s.SaveTranscript(att, a.Id, "whisper", "testo della chiamata", "done", null);
+        tracker.Pause();
+        tracker.Resume(a.Id);
+        tracker.Finish();
+
+        // un'altra attività non deve essere toccata
+        var other = tracker.Start("Altra", s.GetCategories()[0].Id);
+        tracker.AddNote("nota dell'altra");
+        var otherAtt = s.AddAttachment(other.Id, @"C:\Rec\altra.mp4", "audio");
+        s.SaveTranscript(otherAtt, other.Id, "whisper", "altro testo", "done", null);
+
+        s.DeleteActivity(a.Id);
+
+        Assert.Null(s.GetActivity(a.Id));
+        Assert.Empty(s.GetNotes(a.Id));
+        Assert.Empty(s.GetAttachments(a.Id));
+        Assert.Empty(s.GetTranscripts(a.Id));
+        Assert.Empty(s.GetSegments(DateTime.UtcNow.AddYears(-1), DateTime.UtcNow.AddYears(1)).Where(x => x.ActivityId == a.Id));
+        Assert.Null(s.GetAttachment(att));
+
+        // l'altra attività è intatta
+        Assert.NotNull(s.GetActivity(other.Id));
+        Assert.Single(s.GetNotes(other.Id));
+        Assert.Single(s.GetAttachments(other.Id));
+        Assert.Single(s.GetTranscripts(other.Id));
+        // e la persona resta in anagrafica (si toglie solo il legame con l'attività)
+        Assert.Contains(s.GetPeople(), p => p.Id == person);
+    }
+}
