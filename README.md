@@ -13,7 +13,8 @@ Post-it per Windows 11 che traccia le attività della giornata lavorativa e aiut
 - **Screenshot** allegati all'attività in corso (ritaglio di Windows, oppure Ctrl+V dagli appunti).
 - **Registrazione audio con OBS** (⚙ → Registrazione): quando parte un'attività di un tipo "da registrare"
   (di default *Chiamate* e *Riunioni*) TimeHero apre OBS se è chiuso, avvia la registrazione via WebSocket e la
-  ferma a pausa/fine/cambio attività, allegando il file all'attività (🎙). Pulsante manuale ⏺/⏹ e indicatore ● REC
+  mette in pausa con l'attività (stesso file, nessuna perdita alla ripresa) e la chiude a *Fine* / cambio verso un'altra
+  attività da registrare / pausa troppo lunga, allegando il file all'attività (🎙). Pulsante manuale ⏺/⏹ e indicatore ● REC
   nel post-it. Profilo e raccolta di scene dedicati (mono, video minimo) vengono attivati e poi ripristinati.
 - **Trascrizione con Azure OpenAI** (⚙ → Trascrizione): a fine registrazione il file viene inviato al tuo
   deployment (Whisper / gpt-4o-transcribe, con chiave API o account Entra ID) e il testo compare nella timeline

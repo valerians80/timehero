@@ -138,8 +138,9 @@ public sealed class ObsSession : IAsyncDisposable
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            // CloseOutputAsync invia la chiusura senza attendere la risposta del server (CloseAsync può far aspettare)
             if (_ws.State == WebSocketState.Open)
-                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", cts.Token);
+                await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", cts.Token);
         }
         catch
         {

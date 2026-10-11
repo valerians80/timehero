@@ -17,6 +17,13 @@ public sealed class FakeObsServer : IDisposable
     public string? Password { get; set; }
 
     public bool Recording { get; private set; }
+    public bool Paused { get; private set; }
+
+    /// <summary>Se true, PauseRecord viene rifiutato (come con "stesso encoder dello streaming").</summary>
+    public bool RejectPause { get; set; }
+
+    /// <summary>Simula l'utente che chiude la registrazione dall'interfaccia di OBS.</summary>
+    public void StopFromUi() { Recording = false; Paused = false; }
     public string CurrentProfile { get; private set; } = "Predefinito";
     public string CurrentCollection { get; private set; } = "Senza titolo";
     public string[] Profiles { get; set; } = { "Predefinito", "TimeHero" };
@@ -125,7 +132,16 @@ public sealed class FakeObsServer : IDisposable
         switch (type)
         {
             case "GetVersion": return (true, 100, null, new { obsVersion = "30.2.3", obsWebSocketVersion = "5.5.0" });
-            case "GetRecordStatus": return (true, 100, null, new { outputActive = Recording });
+            case "GetRecordStatus": return (true, 100, null, new { outputActive = Recording, outputPaused = Paused });
+            case "PauseRecord":
+                if (!Recording) return (false, 501, "Output not active", null);
+                if (RejectPause) return (false, 703, "Pausing is not supported by this encoder", null);
+                Paused = true;
+                return (true, 100, null, null);
+            case "ResumeRecord":
+                if (!Paused) return (false, 501, "Output not paused", null);
+                Paused = false;
+                return (true, 100, null, null);
             case "StartRecord":
                 if (RejectStart is not null) return (false, 500, RejectStart, null);
                 Recording = true;
@@ -133,6 +149,7 @@ public sealed class FakeObsServer : IDisposable
             case "StopRecord":
                 if (!Recording) return (false, 501, "Output not active", null);
                 Recording = false;
+                Paused = false;
                 return (true, 100, null, new { outputPath = NextOutputPath });
             case "GetProfileList": return (true, 100, null, new { currentProfileName = CurrentProfile, profiles = Profiles });
             case "SetCurrentProfile":

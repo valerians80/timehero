@@ -31,6 +31,12 @@ public sealed class AppSettings
     public string ObsProfile { get => _store.GetSetting("obsProfile") ?? ""; set => _store.SetSetting("obsProfile", value); }
     public string ObsSceneCollection { get => _store.GetSetting("obsCollection") ?? ""; set => _store.SetSetting("obsCollection", value); }
 
+    /// <summary>
+    /// Una registrazione in pausa (attività messa in pausa e non ripresa) si chiude da sola dopo N minuti,
+    /// così il file viene salvato e trascritto. 0 = mai.
+    /// </summary>
+    public int ObsPauseMinutes { get => Get("obsPauseMinutes", 30); set => Set("obsPauseMinutes", value); }
+
     /// <summary>Avvia OBS insieme a TimeHero, così è già pronto quando inizia la chiamata.</summary>
     public bool ObsKeepReady { get => GetBool("obsKeepReady", false); set => SetBool("obsKeepReady", value); }
 

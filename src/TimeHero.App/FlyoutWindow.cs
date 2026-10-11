@@ -387,17 +387,27 @@ public sealed class FlyoutWindow : Window
         var rec = _app.Recorder;
         var cur = Tracker.Current;
         _recBtn.Visibility = rec.Enabled && cur is not null ? Visibility.Visible : Visibility.Collapsed;
-        var active = rec.State is ObsRecorder.RecState.Recording or ObsRecorder.RecState.Starting;
+        var mine = cur is not null && rec.RecordingActivityId == cur.Id;
+        var active = mine && (rec.State is ObsRecorder.RecState.Recording or ObsRecorder.RecState.Starting);
         _recBtn.Content = active ? "⏹ Ferma registrazione" : "⏺ Registra audio";
 
         switch (rec.State)
         {
-            case ObsRecorder.RecState.Recording when rec.StartedUtc is { } t:
+            case ObsRecorder.RecState.Recording:
                 _recStatus.Foreground = Ui.Hex("#FF6B6B");
-                _recStatus.Text = $"● REC {Ui.Hms(DateTime.UtcNow - t)}" + (rec.Message is null ? "" : " · " + rec.Message);
+                _recStatus.Text = $"● REC {Ui.Hms(rec.Elapsed)}" + (rec.Message is null ? "" : " · " + rec.Message);
                 _recStatus.ToolTip = rec.Message;
                 _recStatus.Visibility = Visibility.Visible;
                 break;
+            case ObsRecorder.RecState.Paused:
+            {
+                var title = rec.RecordingActivityId is { } rid ? Store.GetActivity(rid)?.Title : null;
+                _recStatus.Foreground = Ui.Hex("#FFC857");
+                _recStatus.Text = $"⏸ Registrazione in pausa{(title is null ? "" : " · " + title)} ({Ui.Hms(rec.Elapsed)})";
+                _recStatus.ToolTip = "Riprende quando riprendi l'attività; se resta in pausa troppo a lungo si chiude da sola.";
+                _recStatus.Visibility = Visibility.Visible;
+                break;
+            }
             case ObsRecorder.RecState.Starting:
                 _recStatus.Foreground = Ui.Subtle;
                 _recStatus.Text = "◌ Avvio della registrazione… (se OBS è chiuso lo apro)";
@@ -451,7 +461,8 @@ public sealed class FlyoutWindow : Window
         var title = Ui.Text(a.Title, 12.5, true, Brushes.White);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
         title.TextWrapping = TextWrapping.NoWrap;
-        var meta = Ui.Text($"{cat} · {Reporting.FormatHm(total)}{since}", 10.5, fg: Ui.Hex("#FFE4E1"));
+        var recMark = _app.Recorder.RecordingActivityId == a.Id && _app.Recorder.State == ObsRecorder.RecState.Paused ? " · ⏸ REC" : "";
+        var meta = Ui.Text($"{cat} · {Reporting.FormatHm(total)}{since}{recMark}", 10.5, fg: Ui.Hex("#FFE4E1"));
         meta.TextTrimming = TextTrimming.CharacterEllipsis;
         meta.TextWrapping = TextWrapping.NoWrap;
 

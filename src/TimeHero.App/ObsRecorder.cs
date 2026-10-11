@@ -6,7 +6,9 @@ namespace TimeHero.App;
 
 /// <summary>
 /// Registra l'audio con OBS mentre è in corso un'attività di un tipo "da registrare" (chiamate, riunioni).
-/// Avvia OBS se serve, avvia/ferma la registrazione via WebSocket e allega il file all'attività.
+/// Avvia OBS se serve e avvia la registrazione via WebSocket. Quando l'attività va in pausa la registrazione va
+/// in pausa con lei (stesso file, nessuna perdita di tempo alla ripresa); si chiude e si allega a "Fine", quando
+/// parte un'altra attività da registrare, dopo un tempo massimo di pausa o alla chiusura di TimeHero.
 /// Tutte le operazioni sono serializzate: i cambi di stato rapidi non si accavallano.
 /// </summary>
 public sealed class ObsRecorder
@@ -22,6 +24,13 @@ public sealed class ObsRecorder
     private readonly HashSet<long> _forced = new();      // attività da registrare su richiesta dell'utente
     private readonly HashSet<long> _suppressed = new();  // attività dove l'utente ha fermato la registrazione (o è fallita)
 
+    private readonly SynchronizationContext? _ctx = SynchronizationContext.Current;
+    private bool _forceStop;
+    private int _expiryToken;
+    private DateTime? _pausedUtc;
+    private TimeSpan _recordedBefore;
+    private DateTime _segmentStartUtc;
+
     private long? _activityId;
     private long? _lastSeenId;
     private bool _owns;                    // la registrazione l'ha avviata TimeHero (non l'utente da OBS)
@@ -35,16 +44,26 @@ public sealed class ObsRecorder
         _settings = settings;
     }
 
-    public enum RecState { Idle, Starting, Recording, Stopping }
+    public enum RecState { Idle, Starting, Recording, Paused, Stopping }
 
     public RecState State { get; private set; } = RecState.Idle;
-    public DateTime? StartedUtc { get; private set; }
+
+    /// <summary>Per i test: durata massima della pausa. Se null si usa l'impostazione (minuti, 0 = mai).</summary>
+    public TimeSpan? PauseTimeoutOverride { get; set; }
+
+    /// <summary>Tempo effettivamente registrato (le pause non contano), come lo conta OBS.</summary>
+    public TimeSpan Elapsed => _recordedBefore + (State == RecState.Recording ? DateTime.UtcNow - _segmentStartUtc : TimeSpan.Zero);
+
+    private TimeSpan PauseTimeout => PauseTimeoutOverride ?? TimeSpan.FromMinutes(Math.Max(0, _settings.ObsPauseMinutes));
 
     /// <summary>Ultimo messaggio (errore o avviso) da mostrare all'utente; null se tutto ok.</summary>
     public string? Message { get; private set; }
 
     public bool Enabled => _settings.ObsEnabled;
     public bool IsRecording => State == RecState.Recording;
+
+    /// <summary>C'è una registrazione aperta (anche in pausa) o in avvio.</summary>
+    public bool HasRecording => State is RecState.Recording or RecState.Paused or RecState.Starting;
     public long? RecordingActivityId => _activityId;
 
     public event Action? Changed;
@@ -68,6 +87,7 @@ public sealed class ObsRecorder
         {
             _forced.Remove(cur.Id);
             _suppressed.Add(cur.Id);
+            _forceStop = true; // l'utente vuole chiuderla davvero, non metterla in pausa
         }
         else
         {
@@ -142,11 +162,63 @@ public sealed class ObsRecorder
             _lastSeenId = cur?.Id;
             if (State == RecState.Idle) Message = null; // un errore riguarda l'attività di prima
         }
-        long? want = cur is not null && ShouldRecord(cur) ? cur.Id : null;
-        if (_activityId == want) return;
 
-        if (_activityId is not null) await StopCoreAsync();
-        if (want is { } id) await StartCoreAsync(id);
+        if (_forceStop)
+        {
+            _forceStop = false;
+            if (_activityId is not null) await StopCoreAsync();
+        }
+
+        long? want = cur is not null && ShouldRecord(cur) ? cur.Id : null;
+
+        if (_activityId is { } owner)
+        {
+            if (want == owner)
+            {
+                // la stessa attività è tornata in corso: la registrazione in pausa riprende (stesso file)
+                if (State == RecState.Paused) await ResumeCoreAsync();
+                if (_activityId == owner) return;
+            }
+            else if (want is null && Enabled && _tracker.Paused.Any(a => a.Id == owner))
+            {
+                // l'attività è in pausa (o ne è in corso una che non si registra): in pausa anche la registrazione
+                if (State == RecState.Recording) await PauseCoreAsync();
+                if (_dirty) return; // nel frattempo è cambiato qualcosa (es. ripresa): si rivaluta da capo
+                if (_activityId == owner)
+                {
+                    if (PauseExpired()) await StopCoreAsync();
+                    else { ScheduleExpiry(); return; }
+                }
+            }
+            else
+            {
+                // attività finita, disattivata, oppure un'altra attività da registrare: il file si chiude
+                await StopCoreAsync();
+            }
+        }
+
+        if (want is { } id && _activityId is null) await StartCoreAsync(id);
+    }
+
+    private bool PauseExpired() =>
+        _pausedUtc is { } t && PauseTimeout > TimeSpan.Zero && DateTime.UtcNow - t >= PauseTimeout;
+
+    /// <summary>Se nessuno la riprende, la registrazione in pausa si chiude da sola (così il file viene salvato).</summary>
+    private void ScheduleExpiry()
+    {
+        var timeout = PauseTimeout;
+        if (timeout <= TimeSpan.Zero || _pausedUtc is not { } since) return;
+        var token = ++_expiryToken;
+        var remaining = since + timeout - DateTime.UtcNow;
+        if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
+        _ = Task.Delay(remaining + TimeSpan.FromMilliseconds(200)).ContinueWith(_ =>
+            Post(() => { if (token == _expiryToken) Reconcile(); }));
+    }
+
+    private void Post(Action action)
+    {
+        if (_ctx is not null) _ctx.Post(_ => action(), null);
+        else action();
     }
 
     private async Task StartCoreAsync(long activityId)
@@ -162,7 +234,8 @@ public sealed class ObsRecorder
                 // sta già registrando (avviata a mano da OBS): non la tocchiamo, né la fermiamo dopo
                 _owns = false;
                 _activityId = activityId;
-                StartedUtc = DateTime.UtcNow;
+                _recordedBefore = TimeSpan.Zero;
+                _segmentStartUtc = DateTime.UtcNow;
                 SetState(RecState.Recording, "OBS stava già registrando: la lascio com'è.");
                 return;
             }
@@ -171,21 +244,71 @@ public sealed class ObsRecorder
             await s.RequestAsync("StartRecord");
             _owns = true;
             _activityId = activityId;
-            StartedUtc = DateTime.UtcNow;
+            _recordedBefore = TimeSpan.Zero;
+            _segmentStartUtc = DateTime.UtcNow;
+            _pausedUtc = null;
             SetState(RecState.Recording, null);
         }
         catch (Exception ex)
         {
             _suppressed.Add(activityId); // niente tentativi a raffica; il pulsante REC permette di riprovare
             _activityId = null;
-            StartedUtc = null;
             SetState(RecState.Idle, $"Registrazione non avviata: {ex.Message}");
             Notify("Registrazione non avviata", ex.Message);
         }
     }
 
+    /// <summary>Mette in pausa la registrazione di OBS; se OBS non lo permette la chiude (come prima).</summary>
+    private async Task PauseCoreAsync()
+    {
+        if (!_owns)
+        {
+            // registrazione avviata dall'utente in OBS: non è nostra, la lasciamo stare
+            _activityId = null;
+            SetState(RecState.Idle, null);
+            return;
+        }
+        try
+        {
+            await using var s = await ConnectAsync(launch: false);
+            await s.RequestAsync("PauseRecord");
+            _recordedBefore += DateTime.UtcNow - _segmentStartUtc;
+            _pausedUtc = DateTime.UtcNow;
+            SetState(RecState.Paused, null);
+        }
+        catch
+        {
+            // pausa non supportata (es. "stesso encoder dello streaming") o OBS non raggiungibile: si chiude il file
+            await StopCoreAsync();
+        }
+    }
+
+    /// <summary>Riprende la registrazione in pausa. Se non è più possibile, l'attività ne avvierà una nuova.</summary>
+    private async Task ResumeCoreAsync()
+    {
+        try
+        {
+            await using var s = await ConnectAsync(launch: false);
+            await s.RequestAsync("ResumeRecord");
+            _segmentStartUtc = DateTime.UtcNow;
+            _pausedUtc = null;
+            _expiryToken++;
+            SetState(RecState.Recording, null);
+        }
+        catch (Exception ex)
+        {
+            // la registrazione in pausa non c'è più (chiusa da OBS o da un riavvio): ne parte una nuova
+            _activityId = null;
+            _owns = false;
+            _pausedUtc = null;
+            _recordedBefore = TimeSpan.Zero;
+            SetState(RecState.Idle, $"La registrazione in pausa non era più disponibile ({ex.Message}): ne avvio una nuova.");
+        }
+    }
+
     private async Task StopCoreAsync()
     {
+        _expiryToken++; // annulla l'eventuale chiusura programmata
         var activityId = _activityId!.Value;
         var owned = _owns;
         SetState(RecState.Stopping, null);
@@ -219,7 +342,8 @@ public sealed class ObsRecorder
 
         _activityId = null;
         _owns = false;
-        StartedUtc = null;
+        _pausedUtc = null;
+        _recordedBefore = TimeSpan.Zero;
         SetState(RecState.Idle, error);
     }
 

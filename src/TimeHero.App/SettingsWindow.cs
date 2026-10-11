@@ -78,6 +78,7 @@ public sealed class SettingsWindow : Window
     private readonly TextBox _obsExe = Ui.Input();
     private readonly TextBox _obsProfile = Ui.Input();
     private readonly TextBox _obsCollection = Ui.Input();
+    private readonly TextBox _obsPauseMinutes = Ui.Input();
     private readonly CheckBox _obsKeepReady = new() { Content = "Apri OBS insieme a TimeHero (pronto a registrare)", Margin = new Thickness(0, 8, 0, 0) };
     private readonly StackPanel _recordCats = new();
     private readonly TextBlock _obsResult = Ui.Text("", 11, fg: Ui.Subtle);
@@ -93,6 +94,7 @@ public sealed class SettingsWindow : Window
         _obsProfile.Text = st.ObsProfile;
         _obsCollection.Text = st.ObsSceneCollection;
         _obsKeepReady.IsChecked = st.ObsKeepReady;
+        _obsPauseMinutes.Text = st.ObsPauseMinutes.ToString();
 
         var p = new StackPanel { Margin = new Thickness(14) };
         p.Children.Add(_obsEnabled);
@@ -122,6 +124,7 @@ public sealed class SettingsWindow : Window
         p.Children.Add(Ui.Field("Profilo OBS da usare (facoltativo)", _obsProfile));
         p.Children.Add(Ui.Field("Raccolta di scene OBS da usare (facoltativo)", _obsCollection));
         p.Children.Add(_obsKeepReady);
+        p.Children.Add(Ui.Field("Se l'attività resta in pausa, chiudi e salva la registrazione dopo (minuti, 0 = mai)", _obsPauseMinutes));
 
         var catsLabel = Ui.Text("Registra automaticamente le attività di tipo:", 11, fg: Ui.Subtle);
         catsLabel.Margin = new Thickness(2, 14, 0, 4);
@@ -341,6 +344,7 @@ public sealed class SettingsWindow : Window
         st.ObsProfile = _obsProfile.Text.Trim();
         st.ObsSceneCollection = _obsCollection.Text.Trim();
         st.ObsKeepReady = _obsKeepReady.IsChecked == true;
+        st.ObsPauseMinutes = int.TryParse(_obsPauseMinutes.Text, out var pm) && pm >= 0 ? pm : 30;
         foreach (CheckBox cb in _recordCats.Children)
             Store.SetCategoryRecord((long)cb.Tag, cb.IsChecked == true);
     }

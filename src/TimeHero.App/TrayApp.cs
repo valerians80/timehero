@@ -177,6 +177,7 @@ public sealed class TrayApp : IDisposable
             ? $"TimeHero · {Tracker.Paused.Count} in pausa"
             : "TimeHero · nessuna attività";
         if (Recorder.IsRecording) text += " · ● REC";
+        else if (Recorder.State == ObsRecorder.RecState.Paused) text += " · REC in pausa";
         _tray.Text = text.Length > 63 ? text[..63] : text; // limite di NotifyIcon
     }
 
