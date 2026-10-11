@@ -6,7 +6,13 @@ namespace TimeHero.Core;
 
 public class ObsException : Exception
 {
-    public ObsException(string message, Exception? inner = null) : base(message, inner) { }
+    /// <summary>Codice di stato di obs-websocket (0 se non applicabile).</summary>
+    public int Code { get; }
+
+    public ObsException(string message, Exception? inner = null, int code = 0) : base(message, inner) => Code = code;
+
+    /// <summary>OBS ha aperto il WebSocket ma sta ancora caricando profilo e scene: va riprovato.</summary>
+    public const int NotReady = 207;
 }
 
 /// <summary>Password non accettata da OBS (non ha senso riprovare).</summary>
@@ -80,8 +86,33 @@ public sealed class ObsSession : IAsyncDisposable
             if (op != ObsProtocol.OpRequestResponse) continue;
             var r = ObsProtocol.ParseResponse(d);
             if (r.RequestId != id) continue;
-            if (!r.Ok) throw new ObsException($"OBS ha rifiutato {requestType}: {r.Comment ?? "errore"} (codice {r.Code}).");
+            if (!r.Ok) throw new ObsException($"OBS ha rifiutato {requestType}: {r.Comment ?? "errore"} (codice {r.Code}).", null, r.Code);
             return r.Data;
+        }
+    }
+
+    /// <summary>
+    /// Dopo l'avvio di OBS il WebSocket risponde prima che OBS abbia finito di caricarsi (codice 207):
+    /// attende che sia davvero pronto riprovando una richiesta innocua.
+    /// </summary>
+    public async Task WaitReadyAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                await RequestAsync("GetVersion");
+                return;
+            }
+            catch (ObsException ex) when (ex.Code == ObsException.NotReady && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(500);
+            }
+            catch (ObsException ex) when (ex.Code == ObsException.NotReady)
+            {
+                throw new ObsException("OBS si è aperto ma non finisce di caricarsi (provo di nuovo tra un po').", ex, ex.Code);
+            }
         }
     }
 

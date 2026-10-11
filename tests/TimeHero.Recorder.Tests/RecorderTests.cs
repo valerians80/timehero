@@ -210,4 +210,15 @@ public class RecorderTests
         Assert.Contains("password", r.Rec.Message, StringComparison.OrdinalIgnoreCase);
         Assert.False(r.Rec.IsRecording);
     }
+
+    [Fact]
+    public async Task Recording_starts_even_if_obs_is_still_loading_when_the_call_begins()
+    {
+        using var r = new Rig();
+        r.Obs.NotReadyRequests = 4;               // OBS appena aperto: risponde 207 per qualche secondo
+        r.Tracker.Start("Call", r.Calls);
+        await Rig.Until(() => r.Rec.IsRecording, "recording after ready");
+        Assert.True(r.Obs.Recording);
+        Assert.Null(r.Rec.Message);
+    }
 }

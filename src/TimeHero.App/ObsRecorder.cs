@@ -270,10 +270,10 @@ public sealed class ObsRecorder
 
         try
         {
-            return await ObsSession.ConnectAsync(host, port, pw, TimeSpan.FromSeconds(3));
+            return await ReadyAsync(await ObsSession.ConnectAsync(host, port, pw, TimeSpan.FromSeconds(3)));
         }
         catch (ObsAuthException) { throw; }
-        catch (ObsException) when (launch)
+        catch (ObsException ex) when (launch && ex.Code != ObsException.NotReady)
         {
             // OBS non risponde: probabilmente è chiuso
         }
@@ -296,7 +296,7 @@ public sealed class ObsRecorder
             await Task.Delay(1000);
             try
             {
-                return await ObsSession.ConnectAsync(host, port, pw, TimeSpan.FromSeconds(3));
+                return await ReadyAsync(await ObsSession.ConnectAsync(host, port, pw, TimeSpan.FromSeconds(3)));
             }
             catch (ObsAuthException) { throw; }
             catch (ObsException ex) { last = ex; }
@@ -304,6 +304,21 @@ public sealed class ObsRecorder
         throw new ObsException(running
             ? "OBS è aperto ma il WebSocket non risponde: attivalo in OBS → Strumenti → Impostazioni WebSocket server."
             : $"OBS è stato avviato ma non risponde sul WebSocket ({last?.Message}).");
+    }
+
+    /// <summary>Aspetta che OBS abbia finito di caricarsi (profilo, scene) prima di usare la connessione.</summary>
+    private static async Task<ObsSession> ReadyAsync(ObsSession session)
+    {
+        try
+        {
+            await session.WaitReadyAsync(TimeSpan.FromSeconds(40));
+            return session;
+        }
+        catch
+        {
+            await session.DisposeAsync();
+            throw;
+        }
     }
 
     public string? FindObsExe()

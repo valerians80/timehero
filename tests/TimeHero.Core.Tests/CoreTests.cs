@@ -528,4 +528,32 @@ public class ObsSessionTests
         probe.Stop();
         await Assert.ThrowsAsync<ObsException>(() => ObsSession.ConnectAsync("localhost", port, null, TimeSpan.FromSeconds(2)));
     }
+
+    [Fact]
+    public async Task Request_returns_the_obs_status_code_on_failure()
+    {
+        using var obs = new FakeObsServer { NotReadyRequests = 1 };
+        await using var s = await ObsSession.ConnectAsync("localhost", obs.Port, null);
+        var ex = await Assert.ThrowsAsync<ObsException>(() => s.RequestAsync("GetVersion"));
+        Assert.Equal(ObsException.NotReady, ex.Code);
+    }
+
+    [Fact]
+    public async Task WaitReady_retries_while_obs_is_still_loading()
+    {
+        using var obs = new FakeObsServer { NotReadyRequests = 3 };
+        await using var s = await ObsSession.ConnectAsync("localhost", obs.Port, null);
+        await s.WaitReadyAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(4, obs.Calls.Count(c => c == "GetVersion")); // 3 rifiuti + 1 riuscita
+        Assert.Equal("30.2.3", (await s.RequestAsync("GetVersion"))!.Value.GetProperty("obsVersion").GetString());
+    }
+
+    [Fact]
+    public async Task WaitReady_gives_up_after_the_timeout()
+    {
+        using var obs = new FakeObsServer { NotReadyRequests = 1000 };
+        await using var s = await ObsSession.ConnectAsync("localhost", obs.Port, null);
+        var ex = await Assert.ThrowsAsync<ObsException>(() => s.WaitReadyAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(ObsException.NotReady, ex.Code);
+    }
 }

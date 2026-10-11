@@ -23,6 +23,9 @@ public sealed class FakeObsServer : IDisposable
     public string[] Collections { get; set; } = { "Senza titolo", "TimeHero" };
     public string NextOutputPath { get; set; } = @"C:\Rec\chiamata.mkv";
 
+    /// <summary>Le prime N richieste ricevono "OBS is not ready" (codice 207), come subito dopo l'avvio di OBS.</summary>
+    public int NotReadyRequests { get; set; }
+
     /// <summary>Se valorizzato, StartRecord viene rifiutato con questo messaggio.</summary>
     public string? RejectStart { get; set; }
 
@@ -111,6 +114,14 @@ public sealed class FakeObsServer : IDisposable
 
     private (bool Ok, int Code, string? Comment, object? Data) Handle(string type, JsonElement? data)
     {
+        lock (_lock)
+        {
+            if (NotReadyRequests > 0)
+            {
+                NotReadyRequests--;
+                return (false, 207, "OBS is not ready to perform the request.", null);
+            }
+        }
         switch (type)
         {
             case "GetVersion": return (true, 100, null, new { obsVersion = "30.2.3", obsWebSocketVersion = "5.5.0" });
