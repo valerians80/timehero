@@ -1,4 +1,5 @@
 using System.IO;
+using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using System.Windows;
@@ -20,6 +21,8 @@ public sealed class HistoryWindow : Window
     private readonly DatePicker _to = new() { SelectedDate = DateTime.Today, Foreground = Ui.Fg, Margin = new Thickness(0, 2, 0, 0) };
     private readonly ComboBox _round = new() { Width = 100, Margin = new Thickness(0, 2, 0, 0) };
     private readonly DataGrid _grid = new();
+    private Button _deleteBtn = null!;
+    private CheckBox _selectAll = null!;
     private readonly ListBox _byClient = new();
     private readonly ListBox _byActivity = new();
     private readonly ListBox _byCategory = new();
@@ -88,6 +91,10 @@ public sealed class HistoryWindow : Window
         }, tooltip: "Storia dell'attività selezionata: avvio, note con orario, pause e riprese"));
         bottom.Children.Add(Ui.Btn("📋 Copia riepilogo", (_, _) => CopySummary(), tooltip: "Riepilogo per giorno/cliente/categoria da incollare nel timesheet"));
         bottom.Children.Add(Ui.Btn("💾 Esporta CSV", (_, _) => ExportCsv()));
+        _deleteBtn = Ui.Btn("🗑 Elimina selezionate (0)", (_, _) => DeleteChecked(), Ui.Danger,
+            "Elimina in una volta le attività spuntate nella prima colonna");
+        _deleteBtn.IsEnabled = false;
+        bottom.Children.Add(_deleteBtn);
         root.Children.Add(bottom);
 
         // riepiloghi a destra
@@ -151,6 +158,31 @@ public sealed class HistoryWindow : Window
                 Width = double.IsNaN(width) ? new DataGridLength(1, DataGridLengthUnitType.Star) : new DataGridLength(width),
             });
         }
+        // prima colonna: casella di selezione per riga, e una nell'intestazione per selezionarle tutte
+        _selectAll = new CheckBox { ToolTip = "Seleziona / deseleziona tutte", HorizontalAlignment = HorizontalAlignment.Center };
+        _selectAll.Click += (_, _) =>
+        {
+            // lo stato si legge una volta sola: mentre scorro le righe la casella dell'intestazione si riallinea da sola
+            var on = _selectAll.IsChecked == true;
+            foreach (var r in Rows().ToList()) r.Checked = on;
+        };
+        var box = new FrameworkElementFactory(typeof(CheckBox));
+        box.SetBinding(CheckBox.IsCheckedProperty, new Binding(nameof(HistRow.Checked))
+        {
+            Mode = BindingMode.TwoWay,
+            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
+        });
+        box.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        box.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+        _grid.Columns.Add(new DataGridTemplateColumn
+        {
+            Header = _selectAll,
+            Width = new DataGridLength(34),
+            CanUserSort = false,
+            CanUserResize = false,
+            CellTemplate = new DataTemplate { VisualTree = box },
+        });
+
         Col("Giorno", nameof(HistRow.Day), 90);
         Col("Inizio", nameof(HistRow.Start), 55);
         Col("Fine", nameof(HistRow.End), 65);
@@ -173,7 +205,9 @@ public sealed class HistoryWindow : Window
 
         _rows = Reporting.BuildRows(Store, from, to.AddDays(1));
         var round = RoundMinutes;
-        _grid.ItemsSource = _rows.Select(r => new HistRow(r, round)).ToList();
+        _grid.ItemsSource = _rows.Select(r => new HistRow(r, round, OnCheckedChanged)).ToList();
+        _selectAll.IsChecked = false;
+        OnCheckedChanged();
 
         var total = TimeSpan.FromTicks(_rows.Sum(r => r.Duration.Ticks));
         _total.Text = $"Totale: {Reporting.FormatHm(total)}";
@@ -187,6 +221,56 @@ public sealed class HistoryWindow : Window
             .OrderBy(l => l.Key)
             .Select(l => $"{DateTime.ParseExact(l.Key, "yyyy-MM-dd", CultureInfo.InvariantCulture).ToString("ddd dd/MM", It)} — {Reporting.FormatHm(l.Total)}")
             .ToList();
+    }
+
+    private IEnumerable<HistRow> Rows() => (_grid.ItemsSource as IEnumerable<HistRow>) ?? Enumerable.Empty<HistRow>();
+
+    private void OnCheckedChanged()
+    {
+        var rows = Rows().ToList();
+        var n = rows.Count(r => r.Checked);
+        _deleteBtn.Content = $"🗑 Elimina selezionate ({n})";
+        _deleteBtn.IsEnabled = n > 0;
+        // la casella dell'intestazione segue lo stato delle righe (nessuna / tutte / alcune)
+        _selectAll.IsThreeState = false;
+        _selectAll.IsChecked = rows.Count > 0 && n == rows.Count;
+    }
+
+    /// <summary>Elimina in blocco le attività spuntate (con sessioni, note e trascrizioni). I file su disco restano.</summary>
+    private void DeleteChecked()
+    {
+        var ids = Rows().Where(r => r.Checked).Select(r => r.Src.ActivityId).Distinct().ToList();
+        if (ids.Count == 0) return;
+
+        var activities = ids.Select(Store.GetActivity).Where(a => a is not null).Select(a => a!).ToList();
+        var msg = new System.Text.StringBuilder();
+        msg.AppendLine(ids.Count == 1
+            ? "Eliminare l'attività selezionata?"
+            : $"Eliminare le {ids.Count} attività selezionate?");
+        msg.AppendLine();
+        msg.AppendLine("Verranno rimossi anche sessioni, note e trascrizioni. L'operazione non si può annullare.");
+        msg.AppendLine("I file audio e gli screenshot sul disco non vengono cancellati.");
+
+        var multiDay = activities.Count(a => a.Segments.Select(s => s.StartUtc.ToLocalTime().Date).Distinct().Count() > 1);
+        if (multiDay > 0)
+        {
+            msg.AppendLine();
+            msg.AppendLine(multiDay == 1
+                ? "Attenzione: 1 attività ha sessioni anche in altri giorni e verrà eliminata per intero."
+                : $"Attenzione: {multiDay} attività hanno sessioni anche in altri giorni e verranno eliminate per intero.");
+        }
+        if (activities.Any(a => a.IsRunning))
+        {
+            msg.AppendLine();
+            msg.AppendLine("Tra queste c'è l'attività in corso: verrà eliminata e il cronometro si fermerà.");
+        }
+
+        if (MessageBox.Show(this, msg.ToString().TrimEnd(), "Elimina attività", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+
+        foreach (var id in ids) Store.DeleteActivity(id);
+        _app.ShowFlyoutRefresh(); // rilegge lo stato (attività in corso / in pausa)
+        Reload();
     }
 
     private void AddManual()
@@ -224,11 +308,34 @@ public sealed class HistoryWindow : Window
     }
 
     /// <summary>Riga del DataGrid (proprietà già formattate).</summary>
-    private sealed class HistRow
+    private sealed class HistRow : INotifyPropertyChanged
     {
         public TimesheetRow Src { get; }
         private readonly int _round;
-        public HistRow(TimesheetRow src, int round) { Src = src; _round = round; }
+        private readonly Action _onChecked;
+        private bool _checked;
+
+        public HistRow(TimesheetRow src, int round, Action onChecked)
+        {
+            Src = src;
+            _round = round;
+            _onChecked = onChecked;
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        /// <summary>Casella di selezione per l'eliminazione in blocco.</summary>
+        public bool Checked
+        {
+            get => _checked;
+            set
+            {
+                if (_checked == value) return;
+                _checked = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Checked)));
+                _onChecked();
+            }
+        }
 
         public string Day => Src.Start.ToString("ddd dd/MM", It);
         public string Start => Src.Start.ToString("HH:mm");

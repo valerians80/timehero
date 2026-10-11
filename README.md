@@ -21,7 +21,7 @@ Post-it per Windows 11 che traccia le attività della giornata lavorativa e aiut
   dell'attività (📄), con copia e salvataggio. Serve il formato mp4 in OBS e file ≤ 25 MB.
   In alternativa **Azure AI Speech** (trascrizione veloce): file fino a ~300 MB e testo a turni
   ("Interlocutore 1/2…") con il riconoscimento di chi parla.
-- **Storico**: per attività, giorno/settimana/mese, totali per cliente/categoria/giorno, arrotondamento (5–30 min),
+- **Storico**: caselle di selezione per **eliminare più attività in una volta**; per attività, giorno/settimana/mese, totali per cliente/categoria/giorno, arrotondamento (5–30 min),
   modifica manuale, *Copia riepilogo* e **export CSV** (Excel italiano).
 - **Protezioni**: chiede cosa fare dopo un'assenza (inattività/blocco schermo) o se l'app viene chiusa con un'attività aperta.
 - Database locale SQLite: `%LOCALAPPDATA%\TimeHero\timehero.sqlite` (screenshot in `Attachments\`).
