@@ -760,3 +760,44 @@ public class TranscriptionTests : IDisposable
         Assert.NotNull(tr.TranscriptId);
     }
 }
+
+public class AzureEndpointTests
+{
+    [Fact]
+    public void Full_target_uri_is_split_into_endpoint_deployment_and_version()
+    {
+        var (ep, dep, ver) = AzureEndpoint.Normalize(
+            "https://super-mv3-francecentral.cognitiveservices.azure.com/openai/deployments/gpt-4o-transcribe/audio/transcriptions?api-version=2025-03-01-preview",
+            "", "");
+        Assert.Equal("https://super-mv3-francecentral.cognitiveservices.azure.com", ep);
+        Assert.Equal("gpt-4o-transcribe", dep);
+        Assert.Equal("2025-03-01-preview", ver);
+    }
+
+    [Fact]
+    public void Url_values_win_over_the_separate_fields()
+    {
+        var (_, dep, ver) = AzureEndpoint.Normalize(
+            "https://x.openai.azure.com/openai/deployments/whisper-it/audio/transcriptions?api-version=2024-10-21",
+            "altro", "2025-03-01-preview");
+        Assert.Equal("whisper-it", dep);
+        Assert.Equal("2024-10-21", ver);
+    }
+
+    [Fact]
+    public void Plain_endpoint_keeps_the_given_deployment_and_trims_the_slash()
+    {
+        var (ep, dep, ver) = AzureEndpoint.Normalize("  https://oai.openai.azure.com/  ", " whisper ", "");
+        Assert.Equal("https://oai.openai.azure.com", ep);
+        Assert.Equal("whisper", dep);
+        Assert.Equal("2025-03-01-preview", ver);
+    }
+
+    [Fact]
+    public void Garbage_input_does_not_throw()
+    {
+        var (ep, dep, _) = AzureEndpoint.Normalize("non un url", null, null);
+        Assert.Equal("non un url", ep);
+        Assert.Equal("", dep);
+    }
+}

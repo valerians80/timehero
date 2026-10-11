@@ -184,7 +184,7 @@ public sealed class SettingsWindow : Window
 
         var p = new StackPanel { Margin = new Thickness(14) };
         p.Children.Add(Ui.Text("Azure OpenAI — modello di trascrizione (Whisper o gpt-4o-transcribe)", 11, fg: Ui.Subtle));
-        p.Children.Add(Ui.Field("Endpoint (es. https://nome-risorsa.openai.azure.com)", _azEndpoint));
+        p.Children.Add(Ui.Field("Endpoint o Target URI (puoi incollare l'URI intero del deployment)", _azEndpoint));
         p.Children.Add(Ui.Field("Nome del deployment", _azDeployment));
 
         var row = new Grid { Margin = new Thickness(0, 0, 0, 0) };
@@ -238,9 +238,14 @@ public sealed class SettingsWindow : Window
     private void ApplyAzureFields()
     {
         var st = _app.Settings;
-        st.AzureEndpoint = _azEndpoint.Text.Trim();
-        st.AzureDeployment = _azDeployment.Text.Trim();
-        st.AzureApiVersion = string.IsNullOrWhiteSpace(_azApiVersion.Text) ? "2025-03-01-preview" : _azApiVersion.Text.Trim();
+        // se hai incollato il "Target URI" intero, ne ricava endpoint, deployment e versione API
+        var (endpoint, deployment, apiVersion) = AzureEndpoint.Normalize(_azEndpoint.Text, _azDeployment.Text, _azApiVersion.Text);
+        _azEndpoint.Text = endpoint;
+        _azDeployment.Text = deployment;
+        _azApiVersion.Text = apiVersion;
+        st.AzureEndpoint = endpoint;
+        st.AzureDeployment = deployment;
+        st.AzureApiVersion = apiVersion;
         st.AzureLanguage = _azLanguage.Text.Trim();
         var newAuth = _azAuth.SelectedIndex == 1 ? "entra" : "key";
         if (newAuth != st.AzureAuth || _azTenant.Text.Trim() != st.AzureTenant) _app.Transcriber.ResetSignIn();

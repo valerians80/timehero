@@ -53,13 +53,16 @@ public sealed class TranscriptionRunner
         Changed?.Invoke();
     }
 
-    public TranscriptionOptions BuildOptions() => new(
-        _settings.AzureEndpoint.Trim(),
-        _settings.AzureDeployment.Trim(),
-        string.IsNullOrWhiteSpace(_settings.AzureApiVersion) ? "2025-03-01-preview" : _settings.AzureApiVersion.Trim(),
-        _settings.AzureAuth == "key" ? _settings.AzureKey : null,
-        _settings.AzureAuth == "entra" ? GetTokenAsync : null,
-        string.IsNullOrWhiteSpace(_settings.AzureLanguage) ? null : _settings.AzureLanguage.Trim());
+    public TranscriptionOptions BuildOptions()
+    {
+        var (endpoint, deployment, apiVersion) = AzureEndpoint.Normalize(
+            _settings.AzureEndpoint, _settings.AzureDeployment, _settings.AzureApiVersion);
+        return new TranscriptionOptions(
+            endpoint, deployment, apiVersion,
+            _settings.AzureAuth == "key" ? _settings.AzureKey : null,
+            _settings.AzureAuth == "entra" ? GetTokenAsync : null,
+            string.IsNullOrWhiteSpace(_settings.AzureLanguage) ? null : _settings.AzureLanguage.Trim());
+    }
 
     private async Task LoopAsync()
     {
