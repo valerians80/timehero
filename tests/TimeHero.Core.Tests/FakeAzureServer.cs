@@ -30,6 +30,18 @@ public sealed class FakeAzureServer : IDisposable
     public string? LastPath { get; private set; }
     public string? LastQuery { get; private set; }
     public string? LastApiKeyHeader { get; private set; }
+    public string? LastSubscriptionKey { get; private set; }
+
+    /// <summary>Risposta della trascrizione veloce di Azure AI Speech (due interlocutori).</summary>
+    public string SpeechJson { get; set; } = """
+        {"durationMilliseconds":9000,
+         "combinedPhrases":[{"channel":0,"text":"Buongiorno iniziamo. Ciao ho preparato il piano. Perfetto."}],
+         "phrases":[
+           {"channel":0,"speaker":1,"offsetMilliseconds":0,"durationMilliseconds":2000,"text":"Buongiorno, iniziamo.","locale":"it-IT"},
+           {"channel":0,"speaker":2,"offsetMilliseconds":4000,"durationMilliseconds":3000,"text":"Ciao, ho preparato il piano.","locale":"it-IT"},
+           {"channel":0,"speaker":2,"offsetMilliseconds":7500,"durationMilliseconds":1000,"text":"Lo condivido.","locale":"it-IT"},
+           {"channel":0,"speaker":1,"offsetMilliseconds":8800,"durationMilliseconds":1000,"text":"Perfetto.","locale":"it-IT"}]}
+        """;
     public string? LastAuthorization { get; private set; }
     public string? LastBodyText { get; private set; }   // corpo multipart letto come testo (per cercare campi e nome file)
     public int LastBodyLength { get; private set; }
@@ -67,14 +79,19 @@ public sealed class FakeAzureServer : IDisposable
         LastPath = ctx.Request.Url!.AbsolutePath;
         LastQuery = ctx.Request.Url.Query;
         LastApiKeyHeader = ctx.Request.Headers["api-key"];
+        LastSubscriptionKey = ctx.Request.Headers["Ocp-Apim-Subscription-Key"];
+        var isSpeech = LastPath.Contains("speechtotext", StringComparison.OrdinalIgnoreCase);
+        var givenKey = isSpeech ? LastSubscriptionKey : LastApiKeyHeader;
         LastAuthorization = ctx.Request.Headers["Authorization"];
 
         int status = 200;
-        string body = $"{{\"text\":{System.Text.Json.JsonSerializer.Serialize(ResponseText)}}}";
+        string body = isSpeech
+            ? SpeechJson
+            : $"{{\"text\":{System.Text.Json.JsonSerializer.Serialize(ResponseText)}}}";
 
         if (AlwaysStatus is { } s) { status = s; body = AlwaysBody ?? "{}"; }
         else if (n <= FailFirst) { status = FailStatus; body = FailBody ?? "{}"; ctx.Response.AddHeader("Retry-After", "0"); }
-        else if (RequiredApiKey is not null && LastApiKeyHeader != RequiredApiKey) { status = 401; body = "{\"error\":{\"message\":\"Access denied due to invalid subscription key.\"}}"; }
+        else if (RequiredApiKey is not null && givenKey != RequiredApiKey) { status = 401; body = "{\"error\":{\"message\":\"Access denied due to invalid subscription key.\"}}"; }
         else if (RequiredBearer is not null && LastAuthorization != "Bearer " + RequiredBearer) { status = 401; body = "{}"; }
 
         var bytes = Encoding.UTF8.GetBytes(body);

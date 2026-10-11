@@ -11,7 +11,8 @@ public sealed class TranscriptionService
     /// <summary>Quanto aspettare che OBS finisca di scrivere/rimuxare il file prima di rinunciare.</summary>
     public TimeSpan FileWait { get; set; } = TimeSpan.FromSeconds(45);
     public TimeSpan FilePoll { get; set; } = TimeSpan.FromSeconds(1);
-    public long MaxBytes { get; set; } = AzureTranscriber.MaxBytes;
+    /// <summary>Limite di dimensione; se null si usa quello del servizio scelto.</summary>
+    public long? MaxBytes { get; set; }
 
     public TranscriptionService(TimeStore store, AzureTranscriber? api = null)
     {
@@ -38,9 +39,10 @@ public sealed class TranscriptionService
             else
             {
                 var size = new FileInfo(path).Length;
-                if (size > MaxBytes)
+                var limit = MaxBytes ?? options.MaxBytes;
+                if (size > limit)
                 {
-                    error = $"File di {size / 1024.0 / 1024.0:0.#} MB: supera il limite di {MaxBytes / 1024 / 1024} MB. " +
+                    error = $"File di {size / 1024.0 / 1024.0:0.#} MB: supera il limite di {limit / 1024 / 1024} MB. " +
                             "Abbassa il bitrate audio in OBS o metti in pausa a metà chiamata per creare due file.";
                 }
                 else
@@ -54,7 +56,7 @@ public sealed class TranscriptionService
             error = ex.Message;
         }
 
-        var id = _store.SaveTranscript(att.Id, att.ActivityId, options.Deployment, text,
+        var id = _store.SaveTranscript(att.Id, att.ActivityId, options.ModelLabel, text,
             error is null ? "done" : "error", error);
         return _store.GetTranscript(id)!;
     }

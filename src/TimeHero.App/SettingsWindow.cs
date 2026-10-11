@@ -153,6 +153,11 @@ public sealed class SettingsWindow : Window
     }
 
     // ---------- trascrizione con Azure OpenAI ----------
+    private readonly ComboBox _azProvider = new() { FontSize = 12 };
+    private readonly TextBox _azSpeakers = Ui.Input();
+    private StackPanel _azDeploymentField = null!;
+    private StackPanel _azVersionField = null!;
+    private StackPanel _azSpeakersField = null!;
     private readonly TextBox _azEndpoint = Ui.Input();
     private readonly TextBox _azDeployment = Ui.Input();
     private readonly TextBox _azApiVersion = Ui.Input();
@@ -172,6 +177,9 @@ public sealed class SettingsWindow : Window
     private UIElement BuildTranscription()
     {
         var st = _app.Settings;
+        _azProvider.ItemsSource = new[] { "Azure OpenAI (Whisper / GPT)", "Azure AI Speech (riconosce gli interlocutori)" };
+        _azProvider.SelectedIndex = st.AzureProvider == "speech" ? 1 : 0;
+        _azSpeakers.Text = st.SpeechMaxSpeakers.ToString();
         _azEndpoint.Text = st.AzureEndpoint;
         _azDeployment.Text = st.AzureDeployment;
         _azApiVersion.Text = st.AzureApiVersion;
@@ -183,14 +191,18 @@ public sealed class SettingsWindow : Window
         _azAuto.IsChecked = st.AutoTranscribe;
 
         var p = new StackPanel { Margin = new Thickness(14) };
-        p.Children.Add(Ui.Text("Azure OpenAI — modello di trascrizione (Whisper o gpt-4o-transcribe)", 11, fg: Ui.Subtle));
+        p.Children.Add(Ui.Field("Servizio di trascrizione", _azProvider));
         p.Children.Add(Ui.Field("Endpoint o Target URI (puoi incollare l'URI intero del deployment)", _azEndpoint));
-        p.Children.Add(Ui.Field("Nome del deployment", _azDeployment));
+        _azDeploymentField = Ui.Field("Nome del deployment (Whisper o gpt-4o-transcribe)", _azDeployment);
+        p.Children.Add(_azDeploymentField);
+        _azSpeakersField = Ui.Field("Numero massimo di interlocutori (2–10)", _azSpeakers);
+        p.Children.Add(_azSpeakersField);
 
         var row = new Grid { Margin = new Thickness(0, 0, 0, 0) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
         var ver = Ui.Field("Versione API", _azApiVersion);
+        _azVersionField = ver;
         var lang = Ui.Field("Lingua", _azLanguage);
         lang.Margin = new Thickness(8, 6, 0, 0);
         Grid.SetColumn(lang, 1);
@@ -204,6 +216,7 @@ public sealed class SettingsWindow : Window
         p.Children.Add(_azKeyField);
         p.Children.Add(_azTenantField);
         _azAuth.SelectionChanged += (_, _) => UpdateAzureFields();
+        _azProvider.SelectionChanged += (_, _) => UpdateAzureFields();
         UpdateAzureFields();
         p.Children.Add(_azAuto);
 
@@ -220,7 +233,10 @@ public sealed class SettingsWindow : Window
             "• Formato: Azure accetta mp4, m4a, mp3, wav, webm… ma non mkv. In OBS imposta Registrazione → Formato: mp4 (o \"mp4 frammentato\").\n" +
             "• Dimensione: massimo 25 MB per file (circa 50 minuti a 64 kbps mono). Per chiamate più lunghe abbassa il bitrate " +
             "o metti in pausa a metà per ottenere due file.\n" +
-            "• Con Entra ID serve il ruolo \"Cognitive Services OpenAI User\" sulla risorsa; il primo accesso apre il browser.\n" +
+            "• Azure AI Speech: trascrive file fino a circa 300 MB e separa gli interlocutori (\"Interlocutore 1/2…\"). " +
+            "Serve una risorsa con il servizio Speech (anche un \"Azure AI services\" multi-servizio). " +
+            "Se rifiuta l'mp4, in OBS registra l'audio in mp3/wav/ogg.\n" +
+            "• Con Entra ID servono i ruoli \"Cognitive Services OpenAI User\" (OpenAI) o \"Cognitive Services Speech User\" (Speech) sulla risorsa; il primo accesso apre il browser.\n" +
             "• Il file audio viene inviato alla tua risorsa Azure OpenAI; il testo resta nel database di TimeHero, sul tuo PC.", 10.5, fg: Ui.Subtle);
         help.Margin = new Thickness(2, 16, 0, 0);
         p.Children.Add(help);
@@ -230,6 +246,10 @@ public sealed class SettingsWindow : Window
 
     private void UpdateAzureFields()
     {
+        var speech = _azProvider.SelectedIndex == 1;
+        _azDeploymentField.Visibility = speech ? Visibility.Collapsed : Visibility.Visible;
+        _azVersionField.Visibility = speech ? Visibility.Collapsed : Visibility.Visible;
+        _azSpeakersField.Visibility = speech ? Visibility.Visible : Visibility.Collapsed;
         var entra = _azAuth.SelectedIndex == 1;
         _azKeyField.Visibility = entra ? Visibility.Collapsed : Visibility.Visible;
         _azTenantField.Visibility = entra ? Visibility.Visible : Visibility.Collapsed;
@@ -246,6 +266,9 @@ public sealed class SettingsWindow : Window
         st.AzureEndpoint = endpoint;
         st.AzureDeployment = deployment;
         st.AzureApiVersion = apiVersion;
+        st.AzureProvider = _azProvider.SelectedIndex == 1 ? "speech" : "openai";
+        st.SpeechMaxSpeakers = int.TryParse(_azSpeakers.Text, out var spk) ? Math.Clamp(spk, 2, 10) : 4;
+        _azSpeakers.Text = st.SpeechMaxSpeakers.ToString();
         st.AzureLanguage = _azLanguage.Text.Trim();
         var newAuth = _azAuth.SelectedIndex == 1 ? "entra" : "key";
         if (newAuth != st.AzureAuth || _azTenant.Text.Trim() != st.AzureTenant) _app.Transcriber.ResetSignIn();
@@ -261,7 +284,7 @@ public sealed class SettingsWindow : Window
         _azResult.Foreground = Ui.Fg;
         _azResult.Text = _app.Transcriber.IsConfigured
             ? "Impostazioni di trascrizione salvate."
-            : "Salvato, ma mancano dei dati: servono endpoint, deployment e chiave (o accesso Entra ID).";
+            : "Salvato, ma mancano dei dati: servono endpoint, chiave (o accesso Entra ID) e, per Azure OpenAI, il nome del deployment.";
     }
 
     /// <summary>Un secondo di silenzio in formato WAV (16 kHz, mono, 16 bit): basta per provare l'intera catena.</summary>
@@ -292,7 +315,9 @@ public sealed class SettingsWindow : Window
             if (!options.IsConfigured) throw new TranscriptionException("Compila endpoint, deployment e chiave (o scegli Entra ID).");
             await new AzureTranscriber().TranscribeAsync(tmp, options);
             _azResult.Foreground = Ui.Hex("#7BD88F");
-            _azResult.Text = $"✔ Il deployment \"{options.Deployment}\" ha risposto: endpoint, nome e accesso sono corretti.";
+            _azResult.Text = options.Provider == TranscriptionProvider.Speech
+                ? "✔ Azure AI Speech ha risposto: endpoint e accesso sono corretti."
+                : $"✔ Il deployment \"{options.Deployment}\" ha risposto: endpoint, nome e accesso sono corretti.";
         }
         catch (Exception ex)
         {

@@ -18,6 +18,8 @@ Post-it per Windows 11 che traccia le attività della giornata lavorativa e aiut
 - **Trascrizione con Azure OpenAI** (⚙ → Trascrizione): a fine registrazione il file viene inviato al tuo
   deployment (Whisper / gpt-4o-transcribe, con chiave API o account Entra ID) e il testo compare nella timeline
   dell'attività (📄), con copia e salvataggio. Serve il formato mp4 in OBS e file ≤ 25 MB.
+  In alternativa **Azure AI Speech** (trascrizione veloce): file fino a ~300 MB e testo a turni
+  ("Interlocutore 1/2…") con il riconoscimento di chi parla.
 - **Storico**: per attività, giorno/settimana/mese, totali per cliente/categoria/giorno, arrotondamento (5–30 min),
   modifica manuale, *Copia riepilogo* e **export CSV** (Excel italiano).
 - **Protezioni**: chiede cosa fare dopo un'assenza (inattività/blocco schermo) o se l'app viene chiusa con un'attività aperta.

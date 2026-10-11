@@ -4,6 +4,15 @@ using System.Text.Json;
 
 namespace TimeHero.Core;
 
+public enum TranscriptionProvider
+{
+    /// <summary>Azure OpenAI: Whisper / gpt-4o-transcribe (solo testo, max 25 MB).</summary>
+    OpenAi,
+
+    /// <summary>Azure AI Speech, trascrizione veloce: riconosce gli interlocutori, file fino a ~300 MB.</summary>
+    Speech,
+}
+
 /// <param name="Endpoint">Es. https://miarisorsa.openai.azure.com</param>
 /// <param name="Deployment">Nome del deployment (Whisper o gpt-4o-transcribe).</param>
 /// <param name="ApiKey">Chiave della risorsa; se vuota si usa <paramref name="TokenProvider"/> (Microsoft Entra ID).</param>
@@ -13,11 +22,21 @@ public record TranscriptionOptions(
     string ApiVersion = "2025-03-01-preview",
     string? ApiKey = null,
     Func<CancellationToken, Task<string>>? TokenProvider = null,
-    string? Language = "it")
+    string? Language = "it",
+    TranscriptionProvider Provider = TranscriptionProvider.OpenAi,
+    int MaxSpeakers = 4)
 {
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(Deployment) &&
+        !string.IsNullOrWhiteSpace(Endpoint) &&
+        (Provider == TranscriptionProvider.Speech || !string.IsNullOrWhiteSpace(Deployment)) &&
         (!string.IsNullOrEmpty(ApiKey) || TokenProvider is not null);
+
+    /// <summary>Nome da mostrare/salvare come "modello" della trascrizione.</summary>
+    public string ModelLabel => Provider == TranscriptionProvider.Speech ? "azure-ai-speech" : Deployment;
+
+    public long MaxBytes => Provider == TranscriptionProvider.Speech
+        ? AzureTranscriber.SpeechMaxBytes
+        : AzureTranscriber.MaxBytes;
 }
 
 public sealed class TranscriptionException : Exception
@@ -35,6 +54,7 @@ public sealed class AzureTranscriber
         { ".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".oga", ".ogg", ".wav", ".webm" };
 
     public const long MaxBytes = 25L * 1024 * 1024;
+    public const long SpeechMaxBytes = 300L * 1024 * 1024;
 
     private readonly HttpClient _http;
     private readonly TimeSpan _retryDelayCap;
@@ -45,9 +65,24 @@ public sealed class AzureTranscriber
         _retryDelayCap = retryDelayCap ?? TimeSpan.FromSeconds(60);
     }
 
-    public static string BuildUrl(TranscriptionOptions o) =>
-        $"{o.Endpoint.Trim().TrimEnd('/')}/openai/deployments/{Uri.EscapeDataString(o.Deployment.Trim())}" +
-        $"/audio/transcriptions?api-version={Uri.EscapeDataString(o.ApiVersion)}";
+    public static string BuildUrl(TranscriptionOptions o) => o.Provider == TranscriptionProvider.Speech
+        ? $"{o.Endpoint.Trim().TrimEnd('/')}/speechtotext/transcriptions:transcribe?api-version={Uri.EscapeDataString(o.ApiVersion)}"
+        : $"{o.Endpoint.Trim().TrimEnd('/')}/openai/deployments/{Uri.EscapeDataString(o.Deployment.Trim())}" +
+          $"/audio/transcriptions?api-version={Uri.EscapeDataString(o.ApiVersion)}";
+
+    /// <summary>"it" → "it-IT", "it,en" → ["it-IT","en-US"]; valori già completi (it-IT) restano come sono.</summary>
+    public static string[] SpeechLocales(string? language)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["it"] = "it-IT", ["en"] = "en-US", ["fr"] = "fr-FR", ["de"] = "de-DE", ["es"] = "es-ES",
+            ["pt"] = "pt-PT", ["nl"] = "nl-NL",
+        };
+        return (language ?? "")
+            .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(l => l.Contains('-') ? l : map.GetValueOrDefault(l, l))
+            .ToArray();
+    }
 
     /// <summary>Invia il file e restituisce il testo. Riprova da sola su 429 e errori temporanei del server.</summary>
     public async Task<string> TranscribeAsync(string filePath, TranscriptionOptions o, string? prompt = null,
@@ -65,7 +100,8 @@ public sealed class AzureTranscriber
                 resp = await _http.SendAsync(req, ct);
                 var body = await resp.Content.ReadAsStringAsync(ct);
 
-                if (resp.IsSuccessStatusCode) return ParseText(body);
+                if (resp.IsSuccessStatusCode)
+                    return o.Provider == TranscriptionProvider.Speech ? SpeechTranscript.Format(body) : ParseText(body);
 
                 var retryable = resp.StatusCode == HttpStatusCode.TooManyRequests || (int)resp.StatusCode >= 500;
                 if (retryable && attempt < attempts)
@@ -102,16 +138,37 @@ public sealed class AzureTranscriber
         var form = new MultipartFormDataContent();
         var file = new StreamContent(File.OpenRead(filePath));
         file.Headers.ContentType = new MediaTypeHeaderValue(MimeFor(filePath));
-        form.Add(file, "file", Path.GetFileName(filePath));
-        form.Add(new StringContent("json"), "response_format");
-        if (!string.IsNullOrWhiteSpace(o.Language)) form.Add(new StringContent(o.Language.Trim()), "language");
-        if (!string.IsNullOrWhiteSpace(prompt)) form.Add(new StringContent(prompt), "prompt");
+        var speech = o.Provider == TranscriptionProvider.Speech;
+
+        if (speech)
+        {
+            form.Add(file, "audio", Path.GetFileName(filePath));
+            var def = new Dictionary<string, object>
+            {
+                ["diarization"] = new Dictionary<string, object> { ["enabled"] = true, ["maxSpeakers"] = Math.Clamp(o.MaxSpeakers, 2, 35) },
+            };
+            var locales = SpeechLocales(o.Language);
+            if (locales.Length > 0) def["locales"] = locales;
+            form.Add(new StringContent(JsonSerializer.Serialize(def), System.Text.Encoding.UTF8, "application/json"), "definition");
+        }
+        else
+        {
+            form.Add(file, "file", Path.GetFileName(filePath));
+            form.Add(new StringContent("json"), "response_format");
+            if (!string.IsNullOrWhiteSpace(o.Language)) form.Add(new StringContent(o.Language.Trim()), "language");
+            if (!string.IsNullOrWhiteSpace(prompt)) form.Add(new StringContent(prompt), "prompt");
+        }
 
         var req = new HttpRequestMessage(HttpMethod.Post, BuildUrl(o)) { Content = form };
         if (!string.IsNullOrEmpty(o.ApiKey))
-            req.Headers.Add("api-key", o.ApiKey);
+        {
+            if (speech) req.Headers.Add("Ocp-Apim-Subscription-Key", o.ApiKey);
+            else req.Headers.Add("api-key", o.ApiKey);
+        }
         else
+        {
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await o.TokenProvider!(ct));
+        }
         return req;
     }
 
@@ -157,8 +214,10 @@ public sealed class AzureTranscriber
         {
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
                 "Accesso negato ad Azure: controlla la chiave oppure, con Entra ID, che il tuo utente abbia il ruolo " +
-                "\"Cognitive Services OpenAI User\" sulla risorsa.",
-            HttpStatusCode.NotFound => "Deployment non trovato: controlla endpoint e nome del deployment.",
+                "\"Cognitive Services OpenAI User\" (OpenAI) o \"Cognitive Services Speech User\" (Speech) sulla risorsa.",
+            HttpStatusCode.NotFound => "Servizio o deployment non trovato: controlla endpoint e nome del deployment.",
+            HttpStatusCode.UnsupportedMediaType =>
+                "Formato audio non accettato dal servizio: prova mp3, wav o ogg (in OBS: registrazione audio con FFmpeg personalizzato).",
             HttpStatusCode.RequestEntityTooLarge => "File troppo grande per il servizio (massimo 25 MB).",
             HttpStatusCode.TooManyRequests => "Troppe richieste ad Azure (limite di quota): riprova più tardi.",
             _ => $"Azure ha risposto {(int)status}.",

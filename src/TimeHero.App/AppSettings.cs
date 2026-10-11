@@ -38,6 +38,11 @@ public sealed class AppSettings
     public string ObsPassword { get => Secret("obsPassword"); set => SetSecret("obsPassword", value); }
 
     // ---------- trascrizione con Azure OpenAI ----------
+    /// <summary>"openai" (Whisper / GPT) oppure "speech" (Azure AI Speech, riconosce gli interlocutori).</summary>
+    public string AzureProvider { get => _store.GetSetting("azProvider") ?? "openai"; set => _store.SetSetting("azProvider", value); }
+    public string SpeechApiVersion { get => _store.GetSetting("speechApiVersion") ?? "2024-11-15"; set => _store.SetSetting("speechApiVersion", value); }
+    public int SpeechMaxSpeakers { get => Get("speechMaxSpeakers", 4); set => Set("speechMaxSpeakers", value); }
+
     public string AzureEndpoint { get => _store.GetSetting("azEndpoint") ?? ""; set => _store.SetSetting("azEndpoint", value); }
     public string AzureDeployment { get => _store.GetSetting("azDeployment") ?? ""; set => _store.SetSetting("azDeployment", value); }
     public string AzureApiVersion { get => _store.GetSetting("azApiVersion") ?? "2025-03-01-preview"; set => _store.SetSetting("azApiVersion", value); }

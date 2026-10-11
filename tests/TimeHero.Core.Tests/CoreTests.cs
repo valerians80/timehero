@@ -624,7 +624,7 @@ public class TranscriptionTests : IDisposable
 
         using var nf = new FakeAzureServer { AlwaysStatus = 404, AlwaysBody = "{\"error\":{\"message\":\"DeploymentNotFound\"}}" };
         var ex2 = await Assert.ThrowsAsync<TranscriptionException>(() => Api().TranscribeAsync(Audio("b.mp4"), Opts(nf)));
-        Assert.Contains("Deployment non trovato", ex2.Message);
+        Assert.Contains("deployment non trovato", ex2.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DeploymentNotFound", ex2.Message);
 
         using var bad = new FakeAzureServer { AlwaysStatus = 400, AlwaysBody = "{\"error\":{\"message\":\"Invalid file format.\"}}" };
@@ -799,5 +799,118 @@ public class AzureEndpointTests
         var (ep, dep, _) = AzureEndpoint.Normalize("non un url", null, null);
         Assert.Equal("non un url", ep);
         Assert.Equal("", dep);
+    }
+}
+
+public class SpeechTranscriptionTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"th_sp_{Guid.NewGuid():N}");
+
+    public SpeechTranscriptionTests() => Directory.CreateDirectory(_dir);
+    public void Dispose() { try { Directory.Delete(_dir, true); } catch { /* ok */ } }
+
+    private string Audio(string name)
+    {
+        var p = Path.Combine(_dir, name);
+        File.WriteAllBytes(p, new byte[4096]);
+        return p;
+    }
+
+    private static TranscriptionOptions Opts(FakeAzureServer az, string language = "it", int max = 4) =>
+        new(az.Endpoint, "", "2024-11-15", "chiave-speech", null, language, TranscriptionProvider.Speech, max);
+
+    private static AzureTranscriber Api() => new(null, TimeSpan.FromMilliseconds(50));
+
+    [Fact]
+    public async Task Speech_request_has_the_right_url_header_and_definition()
+    {
+        using var az = new FakeAzureServer { RequiredApiKey = "chiave-speech" };
+        await Api().TranscribeAsync(Audio("call.mp3"), Opts(az, "it,en", 3));
+
+        Assert.Equal("/speechtotext/transcriptions:transcribe", az.LastPath);
+        Assert.Contains("api-version=2024-11-15", az.LastQuery);
+        Assert.Equal("chiave-speech", az.LastSubscriptionKey);
+        Assert.Null(az.LastApiKeyHeader);
+        Assert.Contains("name=audio", az.LastBodyText);
+        Assert.Contains("filename=call.mp3", az.LastBodyText);
+        Assert.Contains("name=definition", az.LastBodyText);
+        Assert.Contains("\"diarization\":{\"enabled\":true,\"maxSpeakers\":3}", az.LastBodyText);
+        Assert.Contains("\"locales\":[\"it-IT\",\"en-US\"]", az.LastBodyText);
+    }
+
+    [Fact]
+    public async Task Speech_response_becomes_speaker_turns_with_timestamps()
+    {
+        using var az = new FakeAzureServer();
+        var text = await Api().TranscribeAsync(Audio("call.mp3"), Opts(az));
+        var lines = text.Split(Environment.NewLine);
+        Assert.Equal(new[]
+        {
+            "[00:00] Interlocutore 1: Buongiorno, iniziamo.",
+            "[00:04] Interlocutore 2: Ciao, ho preparato il piano. Lo condivido.",   // due frasi dello stesso interlocutore: un solo turno
+            "[00:08] Interlocutore 1: Perfetto.",
+        }, lines);
+    }
+
+    [Fact]
+    public void Format_handles_missing_speakers_empty_results_and_long_calls()
+    {
+        Assert.Equal("[00:01] ciao", SpeechTranscript.Format(
+            """{"phrases":[{"offsetMilliseconds":1000,"text":"ciao"}]}"""));
+        Assert.Equal("solo testo", SpeechTranscript.Format(
+            """{"combinedPhrases":[{"text":"solo testo"}],"phrases":[]}"""));
+        Assert.Equal("", SpeechTranscript.Format("""{"phrases":[]}"""));
+        var longCall = SpeechTranscript.Format(
+            """{"phrases":[{"speaker":1,"offsetMilliseconds":3725000,"text":"a"}]}""");
+        Assert.Equal("[01:02:05] Interlocutore 1: a", longCall);
+    }
+
+    [Fact]
+    public void Locales_are_mapped_from_short_codes()
+    {
+        Assert.Equal(new[] { "it-IT" }, AzureTranscriber.SpeechLocales("it"));
+        Assert.Equal(new[] { "it-IT", "en-US" }, AzureTranscriber.SpeechLocales("it, en"));
+        Assert.Equal(new[] { "fr-CA" }, AzureTranscriber.SpeechLocales("fr-CA"));
+        Assert.Empty(AzureTranscriber.SpeechLocales(""));
+    }
+
+    [Fact]
+    public void Speech_needs_no_deployment_name_and_has_a_larger_limit()
+    {
+        var speech = new TranscriptionOptions("https://x.cognitiveservices.azure.com", "", ApiKey: "k", Provider: TranscriptionProvider.Speech);
+        Assert.True(speech.IsConfigured);
+        Assert.Equal("azure-ai-speech", speech.ModelLabel);
+        Assert.Equal(AzureTranscriber.SpeechMaxBytes, speech.MaxBytes);
+
+        var openAi = new TranscriptionOptions("https://x.openai.azure.com", "", ApiKey: "k");
+        Assert.False(openAi.IsConfigured);                       // OpenAI richiede il deployment
+        Assert.Equal(AzureTranscriber.MaxBytes, openAi.MaxBytes);
+    }
+
+    [Fact]
+    public async Task Service_saves_a_speech_transcript_and_does_not_apply_the_25mb_limit()
+    {
+        using var az = new FakeAzureServer();
+        using var store = new TimeStore(Database.Open(":memory:"));
+        var a = new ActivityTracker(store).Start("Kickoff", store.GetCategories().Single(c => c.Name == "Chiamate").Id);
+        var big = Path.Combine(_dir, "grande.mp3");
+        using (var fs = File.Create(big)) fs.SetLength(30L * 1024 * 1024);   // 30 MB: troppo per OpenAI, ok per Speech
+        var attId = store.AddAttachment(a.Id, big, "audio");
+
+        var svc = new TranscriptionService(store, new AzureTranscriber(null, TimeSpan.FromMilliseconds(50)))
+        { FileWait = TimeSpan.FromSeconds(3), FilePoll = TimeSpan.FromMilliseconds(40) };
+        var t = await svc.TranscribeAsync(attId, Opts(az));
+
+        Assert.Equal("done", t.Status);
+        Assert.Equal("azure-ai-speech", t.Model);
+        Assert.Contains("Interlocutore 2:", t.Text);
+    }
+
+    [Fact]
+    public async Task Unsupported_media_type_gives_an_actionable_message()
+    {
+        using var az = new FakeAzureServer { AlwaysStatus = 415, AlwaysBody = "{}" };
+        var ex = await Assert.ThrowsAsync<TranscriptionException>(() => Api().TranscribeAsync(Audio("call.mp4"), Opts(az)));
+        Assert.Contains("mp3", ex.Message);
     }
 }

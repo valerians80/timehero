@@ -57,11 +57,16 @@ public sealed class TranscriptionRunner
     {
         var (endpoint, deployment, apiVersion) = AzureEndpoint.Normalize(
             _settings.AzureEndpoint, _settings.AzureDeployment, _settings.AzureApiVersion);
+        var speech = _settings.AzureProvider == "speech";
         return new TranscriptionOptions(
-            endpoint, deployment, apiVersion,
+            endpoint,
+            speech ? "" : deployment,
+            speech ? _settings.SpeechApiVersion : apiVersion,
             _settings.AzureAuth == "key" ? _settings.AzureKey : null,
             _settings.AzureAuth == "entra" ? GetTokenAsync : null,
-            string.IsNullOrWhiteSpace(_settings.AzureLanguage) ? null : _settings.AzureLanguage.Trim());
+            string.IsNullOrWhiteSpace(_settings.AzureLanguage) ? null : _settings.AzureLanguage.Trim(),
+            speech ? TranscriptionProvider.Speech : TranscriptionProvider.OpenAi,
+            Math.Clamp(_settings.SpeechMaxSpeakers, 2, 35));
     }
 
     private async Task LoopAsync()
