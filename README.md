@@ -11,6 +11,10 @@ Post-it per Windows 11 che traccia le attività della giornata lavorativa e aiut
   dell'attività: avvio, note, pause, riprese, chiusura. Le note del giorno finiscono nel riepilogo e nel CSV.
 - **Notifica Windows ogni 5 minuti** con l'attività in corso (pulsanti *Termina* / *Apri*).
 - **Screenshot** allegati all'attività in corso (ritaglio di Windows, oppure Ctrl+V dagli appunti).
+- **Registrazione audio con OBS** (⚙ → Registrazione): quando parte un'attività di un tipo "da registrare"
+  (di default *Chiamate* e *Riunioni*) TimeHero apre OBS se è chiuso, avvia la registrazione via WebSocket e la
+  ferma a pausa/fine/cambio attività, allegando il file all'attività (🎙). Pulsante manuale ⏺/⏹ e indicatore ● REC
+  nel post-it. Profilo e raccolta di scene dedicati (mono, video minimo) vengono attivati e poi ripristinati.
 - **Storico**: per attività, giorno/settimana/mese, totali per cliente/categoria/giorno, arrotondamento (5–30 min),
   modifica manuale, *Copia riepilogo* e **export CSV** (Excel italiano).
 - **Protezioni**: chiede cosa fare dopo un'assenza (inattività/blocco schermo) o se l'app viene chiusa con un'attività aperta.
@@ -22,7 +26,8 @@ Post-it per Windows 11 che traccia le attività della giornata lavorativa e aiut
 |---|---|
 | `src/TimeHero.Core` | modello, SQLite, logica avvia/termina, report/CSV (multipiattaforma, testato) |
 | `src/TimeHero.App` | app WPF (.NET 8, solo Windows): post-it, tray, toast, storico, impostazioni |
-| `tests/TimeHero.Core.Tests` | test xUnit del Core |
+| `tests/TimeHero.Core.Tests` | test xUnit del Core (inclusi client OBS e finto server obs-websocket) |
+| `tests/TimeHero.Recorder.Tests` | test del registratore OBS contro il finto server |
 
 ## Build (su Windows)
 

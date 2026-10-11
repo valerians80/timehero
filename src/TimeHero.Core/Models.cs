@@ -4,9 +4,11 @@ public record Client(long Id, string Name, string? Code, bool Active);
 
 public record Person(long Id, string Name, string? Email, string? Role);
 
-public record Category(long Id, string Name, string Color, int SortOrder, bool Active);
+/// <param name="Record">Se true, le attività di questo tipo avviano la registrazione audio con OBS.</param>
+public record Category(long Id, string Name, string Color, int SortOrder, bool Active, bool Record = false);
 
-public record Attachment(long Id, long ActivityId, string FilePath, DateTime CreatedUtc);
+/// <param name="Kind">"image" (screenshot) oppure "audio" (registrazione OBS).</param>
+public record Attachment(long Id, long ActivityId, string FilePath, DateTime CreatedUtc, string Kind = "image");
 
 /// <summary>Una nota con orario: il "diario" dell'attività, da cui si ricostruisce la cronologia.</summary>
 public record ActivityNote(long Id, long ActivityId, DateTime CreatedUtc, string Text);

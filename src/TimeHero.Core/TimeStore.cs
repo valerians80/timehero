@@ -99,12 +99,13 @@ public sealed class TimeStore : IDisposable
     // ---------- categorie ----------
     public IReadOnlyList<Category> GetCategories(bool includeInactive = false)
     {
-        using var c = Cmd("SELECT Id, Name, Color, SortOrder, Active FROM Categories " +
+        using var c = Cmd("SELECT Id, Name, Color, SortOrder, Active, Record FROM Categories " +
                           (includeInactive ? "" : "WHERE Active = 1 ") + "ORDER BY SortOrder, Name");
         using var r = c.ExecuteReader();
         var list = new List<Category>();
         while (r.Read())
-            list.Add(new Category(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetInt64(4) == 1));
+            list.Add(new Category(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetInt64(4) == 1,
+                r.GetInt64(5) == 1));
         return list;
     }
 
@@ -114,6 +115,12 @@ public sealed class TimeStore : IDisposable
                           "VALUES ($n, $c, (SELECT COALESCE(MAX(SortOrder), 0) + 1 FROM Categories))",
             ("$n", name.Trim()), ("$c", color));
         return InsertId(c);
+    }
+
+    public void SetCategoryRecord(long id, bool record)
+    {
+        using var c = Cmd("UPDATE Categories SET Record = $r WHERE Id = $i", ("$r", record ? 1 : 0), ("$i", id));
+        c.ExecuteNonQuery();
     }
 
     public void SetCategoryActive(long id, bool active)
@@ -325,21 +332,22 @@ public sealed class TimeStore : IDisposable
     }
 
     // ---------- allegati ----------
-    public long AddAttachment(long activityId, string filePath)
+    public long AddAttachment(long activityId, string filePath, string kind = "image")
     {
-        using var c = Cmd("INSERT INTO Attachments (ActivityId, FilePath, CreatedUtc) VALUES ($a, $p, $c)",
-            ("$a", activityId), ("$p", filePath), ("$c", Iso(DateTime.UtcNow)));
+        using var c = Cmd("INSERT INTO Attachments (ActivityId, FilePath, CreatedUtc, Kind) VALUES ($a, $p, $c, $k)",
+            ("$a", activityId), ("$p", filePath), ("$c", Iso(DateTime.UtcNow)), ("$k", kind));
         return InsertId(c);
     }
 
     public IReadOnlyList<Attachment> GetAttachments(long activityId)
     {
-        using var c = Cmd("SELECT Id, ActivityId, FilePath, CreatedUtc FROM Attachments " +
+        using var c = Cmd("SELECT Id, ActivityId, FilePath, CreatedUtc, Kind FROM Attachments " +
                           "WHERE ActivityId = $a ORDER BY CreatedUtc", ("$a", activityId));
         using var r = c.ExecuteReader();
         var list = new List<Attachment>();
         while (r.Read())
-            list.Add(new Attachment(r.GetInt64(0), r.GetInt64(1), r.GetString(2), ParseUtc(r.GetString(3))));
+            list.Add(new Attachment(r.GetInt64(0), r.GetInt64(1), r.GetString(2), ParseUtc(r.GetString(3)),
+                r.GetString(4)));
         return list;
     }
 

@@ -343,3 +343,189 @@ public class NotesAndTimelineTests
         Assert.Contains("| 09:20 aperto ticket", Reporting.ToSummaryText(rows, 15));
     }
 }
+
+public class RecordingTests
+{
+    [Fact]
+    public void Obs_auth_matches_the_documented_example()
+    {
+        // esempio della documentazione di obs-websocket v5
+        var auth = ObsProtocol.ComputeAuth("supersecretpassword",
+            "lM1GncleQOaCu9lT1yeUZhFYnqhsLLP1G5lAGo3ixaI=",
+            "+IxH4CnCiqpX1rM9scsNynZzbOe4KhDeYcTNS3PDaeY=");
+        Assert.Equal("1Ct943GAT+6YQUUX47Ia/ncufilbe6+oD6lY+5kaCu4=", auth);
+    }
+
+    [Fact]
+    public void Identify_includes_auth_only_when_obs_requires_it()
+    {
+        var (_, withAuth) = ObsProtocol.ParseMessage(
+            """{"op":0,"d":{"obsWebSocketVersion":"5.1.0","rpcVersion":1,"authentication":{"challenge":"c","salt":"s"}}}""");
+        Assert.True(ObsProtocol.RequiresAuth(withAuth));
+        var identify = ObsProtocol.BuildIdentify(withAuth, "pw");
+        var (op, d) = ObsProtocol.ParseMessage(identify);
+        Assert.Equal(ObsProtocol.OpIdentify, op);
+        Assert.Equal(ObsProtocol.ComputeAuth("pw", "s", "c"), d.GetProperty("authentication").GetString());
+
+        var (_, noAuth) = ObsProtocol.ParseMessage("""{"op":0,"d":{"obsWebSocketVersion":"5.1.0","rpcVersion":1}}""");
+        Assert.False(ObsProtocol.RequiresAuth(noAuth));
+        Assert.DoesNotContain("authentication", ObsProtocol.BuildIdentify(noAuth, "pw"));
+    }
+
+    [Fact]
+    public void Request_and_response_roundtrip()
+    {
+        var req = ObsProtocol.BuildRequest("SetCurrentProfile", "id1", new { profileName = "TimeHero" });
+        Assert.Contains("\"requestType\":\"SetCurrentProfile\"", req);
+        Assert.Contains("\"profileName\":\"TimeHero\"", req);
+
+        var (op, d) = ObsProtocol.ParseMessage(
+            """{"op":7,"d":{"requestType":"StopRecord","requestId":"id1","requestStatus":{"result":true,"code":100},"responseData":{"outputPath":"C:\\rec\\a.mkv"}}}""");
+        Assert.Equal(ObsProtocol.OpRequestResponse, op);
+        var r = ObsProtocol.ParseResponse(d);
+        Assert.True(r.Ok);
+        Assert.Equal("id1", r.RequestId);
+        Assert.Equal(@"C:\rec\a.mkv", r.Data!.Value.GetProperty("outputPath").GetString());
+
+        var (_, bad) = ObsProtocol.ParseMessage(
+            """{"op":7,"d":{"requestType":"StartRecord","requestId":"id2","requestStatus":{"result":false,"code":500,"comment":"Already active"}}}""");
+        var fail = ObsProtocol.ParseResponse(bad);
+        Assert.False(fail.Ok);
+        Assert.Equal("Already active", fail.Comment);
+    }
+
+    [Fact]
+    public void Default_categories_flag_calls_and_meetings_for_recording()
+    {
+        using var s = new TimeStore(Database.Open(":memory:"));
+        var cats = s.GetCategories();
+        Assert.True(cats.Single(c => c.Name == "Chiamate").Record);
+        Assert.True(cats.Single(c => c.Name == "Riunioni").Record);
+        Assert.False(cats.Single(c => c.Name == "Gestione mail").Record);
+
+        var mail = cats.Single(c => c.Name == "Gestione mail");
+        s.SetCategoryRecord(mail.Id, true);
+        Assert.True(s.GetCategories().Single(c => c.Id == mail.Id).Record);
+    }
+
+    [Fact]
+    public void Attachments_keep_their_kind()
+    {
+        using var s = new TimeStore(Database.Open(":memory:"));
+        var a = new ActivityTracker(s).Start("Call", s.GetCategories()[1].Id);
+        s.AddAttachment(a.Id, @"C:\x\shot.png");
+        s.AddAttachment(a.Id, @"C:\rec\call.mkv", "audio");
+        var list = s.GetAttachments(a.Id);
+        Assert.Equal("image", list[0].Kind);
+        Assert.Equal("audio", list[1].Kind);
+    }
+
+    [Fact]
+    public void Old_database_gets_recording_columns()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"timehero_{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            using (var old = new SqliteConnection($"Data Source={path}"))
+            {
+                old.Open();
+                using var cmd = old.CreateCommand();
+                cmd.CommandText = """
+                    CREATE TABLE Categories (Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL UNIQUE,
+                        Color TEXT NOT NULL DEFAULT '#F2C94C', SortOrder INTEGER NOT NULL DEFAULT 0, Active INTEGER NOT NULL DEFAULT 1);
+                    INSERT INTO Categories (Name) VALUES ('Chiamate'), ('Gestione mail');
+                    """;
+                cmd.ExecuteNonQuery();
+            }
+            using var s = new TimeStore(Database.Open(path));
+            var cats = s.GetCategories();
+            Assert.True(cats.Single(c => c.Name == "Chiamate").Record);
+            Assert.False(cats.Single(c => c.Name == "Gestione mail").Record);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Resolve_finds_the_remuxed_file()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"th_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var mkv = Path.Combine(dir, "call.mkv");
+            var mp4 = Path.Combine(dir, "call.mp4");
+            File.WriteAllText(mp4, "x");
+            Assert.Equal(mp4, RecordingFiles.Resolve(mkv));   // l'mkv è stato rimuxato in mp4
+            File.WriteAllText(mkv, "x");
+            Assert.Equal(mkv, RecordingFiles.Resolve(mkv));   // se esiste, resta quello
+            Assert.Equal(Path.Combine(dir, "none.mkv"), RecordingFiles.Resolve(Path.Combine(dir, "none.mkv")));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+}
+
+public class ObsSessionTests
+{
+    [Fact]
+    public async Task Connects_without_password_and_runs_a_recording_cycle()
+    {
+        using var obs = new FakeObsServer();
+        await using var s = await ObsSession.ConnectAsync("localhost", obs.Port, null);
+
+        var ver = await s.RequestAsync("GetVersion");
+        Assert.Equal("30.2.3", ver!.Value.GetProperty("obsVersion").GetString());
+
+        await s.RequestAsync("StartRecord");
+        Assert.True(obs.Recording);
+        var stop = await s.RequestAsync("StopRecord");
+        Assert.False(obs.Recording);
+        Assert.Equal(@"C:\Rec\chiamata.mkv", stop!.Value.GetProperty("outputPath").GetString());
+    }
+
+    [Fact]
+    public async Task Authenticates_with_the_password()
+    {
+        using var obs = new FakeObsServer { Password = "supersecretpassword" };
+        await using var s = await ObsSession.ConnectAsync("localhost", obs.Port, "supersecretpassword");
+        var status = await s.RequestAsync("GetRecordStatus");
+        Assert.False(status!.Value.GetProperty("outputActive").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Wrong_password_raises_auth_exception()
+    {
+        using var obs = new FakeObsServer { Password = "giusta" };
+        await Assert.ThrowsAsync<ObsAuthException>(() => ObsSession.ConnectAsync("localhost", obs.Port, "sbagliata"));
+    }
+
+    [Fact]
+    public async Task Missing_password_gives_a_clear_message()
+    {
+        using var obs = new FakeObsServer { Password = "giusta" };
+        var ex = await Assert.ThrowsAsync<ObsAuthException>(() => ObsSession.ConnectAsync("localhost", obs.Port, ""));
+        Assert.Contains("password", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Rejected_request_raises_with_obs_comment()
+    {
+        using var obs = new FakeObsServer { RejectStart = "No audio device" };
+        await using var s = await ObsSession.ConnectAsync("localhost", obs.Port, null);
+        var ex = await Assert.ThrowsAsync<ObsException>(() => s.RequestAsync("StartRecord"));
+        Assert.Contains("No audio device", ex.Message);
+    }
+
+    [Fact]
+    public async Task Nothing_listening_raises_obs_exception()
+    {
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        await Assert.ThrowsAsync<ObsException>(() => ObsSession.ConnectAsync("localhost", port, null, TimeSpan.FromSeconds(2)));
+    }
+}

@@ -12,6 +12,7 @@ public sealed class TrayApp : IDisposable
     public TimeStore Store { get; }
     public ActivityTracker Tracker { get; }
     public AppSettings Settings { get; }
+    public ObsRecorder Recorder { get; }
 
     private readonly System.Windows.Forms.NotifyIcon _tray;
     private readonly FlyoutWindow _flyout;
@@ -29,6 +30,7 @@ public sealed class TrayApp : IDisposable
         Store = TimeStore.OpenFile();
         Tracker = new ActivityTracker(Store);
         Settings = new AppSettings(Store);
+        Recorder = new ObsRecorder(Store, Tracker, Settings);
 
         Notifier.Init(OnToastAction);
         _flyout = new FlyoutWindow(this);
@@ -56,6 +58,12 @@ public sealed class TrayApp : IDisposable
             _lastReminder = DateTime.UtcNow;
             UpdateTrayText();
             _flyout.Refresh();
+            Recorder.Reconcile(); // chiamata/riunione → parte (o si ferma) la registrazione
+        };
+        Recorder.Changed += () =>
+        {
+            UpdateTrayText();
+            _flyout.RefreshRecording();
         };
 
         SystemEvents.SessionSwitch += OnSessionSwitch;
@@ -64,6 +72,7 @@ public sealed class TrayApp : IDisposable
         UpdateTrayText();
 
         System.Windows.Application.Current.Dispatcher.BeginInvoke(RecoverIfNeeded);
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(async () => await Recorder.WarmUpAsync()));
     }
 
     // ---------- finestre ----------
@@ -106,6 +115,9 @@ public sealed class TrayApp : IDisposable
 
     public void Exit()
     {
+        // ferma e salva l'eventuale registrazione (fuori dal thread UI per non bloccarlo)
+        try { Task.Run(() => Recorder.StopForExitAsync()).Wait(TimeSpan.FromSeconds(12)); }
+        catch { /* si esce comunque */ }
         Dispose();
         System.Windows.Application.Current.Shutdown();
     }
@@ -154,6 +166,7 @@ public sealed class TrayApp : IDisposable
         else text = Tracker.Paused.Count > 0
             ? $"TimeHero · {Tracker.Paused.Count} in pausa"
             : "TimeHero · nessuna attività";
+        if (Recorder.IsRecording) text += " · ● REC";
         _tray.Text = text.Length > 63 ? text[..63] : text; // limite di NotifyIcon
     }
 

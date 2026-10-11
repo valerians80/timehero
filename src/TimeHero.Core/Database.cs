@@ -51,7 +51,8 @@ public static class Database
             Name TEXT NOT NULL UNIQUE,
             Color TEXT NOT NULL DEFAULT '#F2C94C',
             SortOrder INTEGER NOT NULL DEFAULT 0,
-            Active INTEGER NOT NULL DEFAULT 1);
+            Active INTEGER NOT NULL DEFAULT 1,
+            Record INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS Activities (
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
             Title TEXT NOT NULL DEFAULT '',
@@ -83,20 +84,21 @@ public static class Database
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
             ActivityId INTEGER NOT NULL REFERENCES Activities(Id) ON DELETE CASCADE,
             FilePath TEXT NOT NULL,
-            CreatedUtc TEXT NOT NULL);
+            CreatedUtc TEXT NOT NULL,
+            Kind TEXT NOT NULL DEFAULT 'image');
         CREATE TABLE IF NOT EXISTS Settings (
             Key TEXT PRIMARY KEY,
             Value TEXT NOT NULL);
         """;
 
-    private static readonly (string Name, string Color)[] DefaultCategories =
+    private static readonly (string Name, string Color, bool Record)[] DefaultCategories =
     {
-        ("Attività programmate", "#F2C94C"),
-        ("Chiamate", "#6FCF97"),
-        ("Gestione mail", "#56CCF2"),
-        ("Riunioni", "#BB86FC"),
-        ("Analisi / Studio", "#F2994A"),
-        ("Altro", "#BDBDBD"),
+        ("Attività programmate", "#F2C94C", false),
+        ("Chiamate", "#6FCF97", true),
+        ("Gestione mail", "#56CCF2", false),
+        ("Riunioni", "#BB86FC", true),
+        ("Analisi / Studio", "#F2994A", false),
+        ("Altro", "#BDBDBD", false),
     };
 
     private static void Migrate(SqliteConnection conn)
@@ -108,18 +110,20 @@ public static class Database
         }
 
         MigrateToSegments(conn);
+        MigrateRecording(conn);
 
         using var count = conn.CreateCommand();
         count.CommandText = "SELECT COUNT(*) FROM Categories";
         if ((long)count.ExecuteScalar()! > 0) return;
 
         var order = 0;
-        foreach (var (name, color) in DefaultCategories)
+        foreach (var (name, color, record) in DefaultCategories)
         {
             using var ins = conn.CreateCommand();
-            ins.CommandText = "INSERT INTO Categories (Name, Color, SortOrder) VALUES ($n, $c, $o)";
+            ins.CommandText = "INSERT INTO Categories (Name, Color, SortOrder, Record) VALUES ($n, $c, $o, $r)";
             ins.Parameters.AddWithValue("$n", name);
             ins.Parameters.AddWithValue("$c", color);
+            ins.Parameters.AddWithValue("$r", record ? 1 : 0);
             ins.Parameters.AddWithValue("$o", order++);
             ins.ExecuteNonQuery();
         }
@@ -146,5 +150,35 @@ public static class Database
             """;
         cmd.ExecuteNonQuery();
         tx.Commit();
+    }
+
+    private static bool HasColumn(SqliteConnection conn, string table, string column)
+    {
+        using var c = conn.CreateCommand();
+        c.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'";
+        return (long)c.ExecuteScalar()! > 0;
+    }
+
+    /// <summary>
+    /// Registrazione audio: flag "registra" sulle categorie (attivo per Chiamate e Riunioni nei database
+    /// esistenti) e tipo di allegato (immagine / audio).
+    /// </summary>
+    private static void MigrateRecording(SqliteConnection conn)
+    {
+        if (!HasColumn(conn, "Categories", "Record"))
+        {
+            using var c = conn.CreateCommand();
+            c.CommandText = """
+                ALTER TABLE Categories ADD COLUMN Record INTEGER NOT NULL DEFAULT 0;
+                UPDATE Categories SET Record = 1 WHERE Name IN ('Chiamate', 'Riunioni');
+                """;
+            c.ExecuteNonQuery();
+        }
+        if (!HasColumn(conn, "Attachments", "Kind"))
+        {
+            using var c = conn.CreateCommand();
+            c.CommandText = "ALTER TABLE Attachments ADD COLUMN Kind TEXT NOT NULL DEFAULT 'image'";
+            c.ExecuteNonQuery();
+        }
     }
 }

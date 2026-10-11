@@ -27,6 +27,8 @@ public sealed class FlyoutWindow : Window
     private readonly TextBlock _elapsed = Ui.Text("00:00:00", 26, true);
     private readonly TextBlock _session = Ui.Text("", 11, fg: Ui.Subtle);
     private readonly TextBlock _attach = Ui.Text("", 11, fg: Ui.Subtle);
+    private readonly TextBlock _recStatus = Ui.Text("", 11, true);
+    private readonly Button _recBtn;
     private readonly TextBox _logBox = Ui.Input();
     private readonly TextBlock _logHint = new()
     {
@@ -90,6 +92,8 @@ public sealed class FlyoutWindow : Window
         _pause = Ui.Btn("⏸ Pausa", (_, _) => OnPause(), tooltip: "Metti in pausa: resta aperta e la ritrovi nei riquadri rossi");
         _finish = Ui.Btn("✔ Fine", (_, _) => OnFinish(), Ui.Go, "Chiudi definitivamente l'attività");
         _editBtn = Ui.Btn("✎", (_, _) => ToggleEdit(), Brushes.Transparent, "Cliente, colleghi e note dell'attività in corso");
+        _recBtn = Ui.Btn("⏺ Registra audio", (_, _) => _app.Recorder.ToggleManual(),
+            tooltip: "Avvia o ferma la registrazione audio con OBS per questa attività");
         _timelineBtn = Ui.Btn("🕘", (_, _) =>
         {
             if (Tracker.Current is { } cur) _app.ShowTimeline(cur.Id);
@@ -180,6 +184,10 @@ public sealed class FlyoutWindow : Window
         // visibile solo con un'attività in corso: tempo, pausa/fine, screenshot
         _runningBlock.Children.Add(_elapsed);
         _runningBlock.Children.Add(_session);
+        _recStatus.Margin = new Thickness(0, 4, 0, 0);
+        _recStatus.TextTrimming = TextTrimming.CharacterEllipsis;
+        _recStatus.TextWrapping = TextWrapping.NoWrap;
+        _runningBlock.Children.Add(_recStatus);
 
         // diario: una nota con orario (Invio), subito sotto il cronometro
         var logRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
@@ -205,6 +213,7 @@ public sealed class FlyoutWindow : Window
         shots.Children.Add(Ui.Btn("📋 Incolla", (_, _) => _app.PasteScreenshot(),
             tooltip: "Allega l'immagine negli appunti (anche Ctrl+V)"));
         _runningBlock.Children.Add(shots);
+        _runningBlock.Children.Add(_recBtn);
         _runningBlock.Children.Add(_attach);
         cp.Children.Add(_runningBlock);
         current.Child = cp;
@@ -346,8 +355,13 @@ public sealed class FlyoutWindow : Window
         {
             var cat = allCats.FirstOrDefault(c => c.Id == cur.CategoryId)?.Name ?? "?";
             _curMeta.Text = $"{cat} · dalle {cur.StartUtc.ToLocalTime():HH:mm}";
-            var n = Store.GetAttachments(cur.Id).Count;
-            _attach.Text = n == 0 ? "" : n == 1 ? "📎 1 allegato" : $"📎 {n} allegati";
+            var atts = Store.GetAttachments(cur.Id);
+            var audio = atts.Count(a => a.Kind == "audio");
+            var images = atts.Count - audio;
+            var parts = new List<string>();
+            if (images > 0) parts.Add(images == 1 ? "📎 1 allegato" : $"📎 {images} allegati");
+            if (audio > 0) parts.Add(audio == 1 ? "🎙 1 registrazione" : $"🎙 {audio} registrazioni");
+            _attach.Text = string.Join("  ·  ", parts);
             ShowLastNote(Store.GetNotes(cur.Id));
             _curClosed = TimeSpan.FromTicks(cur.Segments.Where(s => s.EndUtc is not null)
                 .Sum(s => s.Duration(DateTime.UtcNow).Ticks));
@@ -361,7 +375,46 @@ public sealed class FlyoutWindow : Window
         _doneToday = TimeSpan.FromTicks(Store.GetSegments(from, to)
             .Where(s => s.EndUtc is not null).Sum(s => s.Duration(DateTime.UtcNow).Ticks));
 
+        RefreshRecording();
         UpdateClock();
+    }
+
+    /// <summary>Indicatore e pulsante della registrazione audio (OBS).</summary>
+    public void RefreshRecording()
+    {
+        var rec = _app.Recorder;
+        var cur = Tracker.Current;
+        _recBtn.Visibility = rec.Enabled && cur is not null ? Visibility.Visible : Visibility.Collapsed;
+        var active = rec.State is ObsRecorder.RecState.Recording or ObsRecorder.RecState.Starting;
+        _recBtn.Content = active ? "⏹ Ferma registrazione" : "⏺ Registra audio";
+
+        switch (rec.State)
+        {
+            case ObsRecorder.RecState.Recording when rec.StartedUtc is { } t:
+                _recStatus.Foreground = Ui.Hex("#FF6B6B");
+                _recStatus.Text = $"● REC {Ui.Hms(DateTime.UtcNow - t)}" + (rec.Message is null ? "" : " · " + rec.Message);
+                _recStatus.ToolTip = rec.Message;
+                _recStatus.Visibility = Visibility.Visible;
+                break;
+            case ObsRecorder.RecState.Starting:
+                _recStatus.Foreground = Ui.Subtle;
+                _recStatus.Text = "◌ Avvio della registrazione… (se OBS è chiuso lo apro)";
+                _recStatus.ToolTip = null;
+                _recStatus.Visibility = Visibility.Visible;
+                break;
+            case ObsRecorder.RecState.Stopping:
+                _recStatus.Foreground = Ui.Subtle;
+                _recStatus.Text = "◌ Salvataggio della registrazione…";
+                _recStatus.ToolTip = null;
+                _recStatus.Visibility = Visibility.Visible;
+                break;
+            default:
+                _recStatus.Foreground = Ui.Hex("#FF8A80");
+                _recStatus.Text = rec.Message ?? "";
+                _recStatus.ToolTip = rec.Message;
+                _recStatus.Visibility = string.IsNullOrEmpty(rec.Message) ? Visibility.Collapsed : Visibility.Visible;
+                break;
+        }
     }
 
     private void UpdateClock()
@@ -372,6 +425,7 @@ public sealed class FlyoutWindow : Window
         _elapsed.Text = Ui.Hms(cur is null ? TimeSpan.Zero : _curClosed + session);
         _session.Text = cur is null ? "" : $"totale attività · sessione corrente {Ui.Hms(session)}";
         _today.Text = $"Oggi: {Reporting.FormatHm(_doneToday + session)}";
+        if (_app.Recorder.IsRecording) RefreshRecording(); // fa avanzare il tempo di registrazione
     }
 
     private void RebuildPausedTiles(IReadOnlyList<Category> cats)
