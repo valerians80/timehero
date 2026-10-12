@@ -196,19 +196,51 @@ public sealed class AzureTranscriber
         }
     }
 
-    private static TranscriptionException Describe(HttpStatusCode status, string body)
+    /// <summary>
+    /// Il dettaglio dell'errore nella risposta di Azure. Le forme cambiano da servizio a servizio:
+    /// {"error":{"message"}} (OpenAI), {"code","message"} (Speech), {"error":"testo"}, oppure testo semplice.
+    /// </summary>
+    public static string? ExtractDetail(string body)
     {
-        string? detail = null;
+        if (string.IsNullOrWhiteSpace(body)) return null;
         try
         {
             using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("error", out var e) && e.TryGetProperty("message", out var m))
-                detail = m.GetString();
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                string? Str(JsonElement e, string name) =>
+                    e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+                        ? v.GetString() : null;
+
+                if (root.TryGetProperty("error", out var err))
+                {
+                    if (err.ValueKind == JsonValueKind.String) return err.GetString();
+                    var m = Str(err, "message");
+                    if (m is not null) return Str(err, "code") is { } c ? $"{c}: {m}" : m;
+                }
+                var top = Str(root, "message");
+                if (top is not null) return Str(root, "code") is { } code ? $"{code}: {top}" : top;
+                if (root.TryGetProperty("innererror", out var inner) && Str(inner, "message") is { } im) return im;
+            }
+            // JSON di forma sconosciuta: lo mostro com'è (accorciato)
+            return Shorten(body);
         }
         catch (JsonException)
         {
-            // corpo non JSON
+            return Shorten(body); // testo semplice
         }
+    }
+
+    private static string Shorten(string s)
+    {
+        s = s.Trim().ReplaceLineEndings(" ");
+        return s.Length > 300 ? s[..300] + "…" : s;
+    }
+
+    private static TranscriptionException Describe(HttpStatusCode status, string body)
+    {
+        var detail = ExtractDetail(body);
 
         var msg = status switch
         {
@@ -220,6 +252,8 @@ public sealed class AzureTranscriber
                 "Formato audio non accettato dal servizio: prova mp3, wav o ogg (in OBS: registrazione audio con FFmpeg personalizzato).",
             HttpStatusCode.RequestEntityTooLarge => "File troppo grande per il servizio (massimo 25 MB).",
             HttpStatusCode.TooManyRequests => "Troppe richieste ad Azure (limite di quota): riprova più tardi.",
+            (HttpStatusCode)422 => "Azure non riesce a elaborare il file o la richiesta (422).",
+            HttpStatusCode.BadRequest => "Azure ha rifiutato la richiesta (400).",
             _ => $"Azure ha risposto {(int)status}.",
         };
         return new TranscriptionException(detail is null ? msg : $"{msg} Dettaglio: {detail}", status);

@@ -956,3 +956,44 @@ public class DeleteCascadeTests
         Assert.Contains(s.GetPeople(), p => p.Id == person);
     }
 }
+
+public class ErrorDetailTests
+{
+    [Theory]
+    [InlineData("""{"error":{"code":"x","message":"Invalid file format."}}""", "x: Invalid file format.")]
+    [InlineData("""{"error":{"message":"Solo messaggio"}}""", "Solo messaggio")]
+    [InlineData("""{"code":"InvalidRequest","message":"Unsupported audio format."}""", "InvalidRequest: Unsupported audio format.")]
+    [InlineData("""{"error":"testo semplice"}""", "testo semplice")]
+    [InlineData("""{"innererror":{"message":"dettaglio interno"}}""", "dettaglio interno")]
+    [InlineData("Bad Request: audio too long", "Bad Request: audio too long")]
+    public void Extracts_the_detail_from_the_different_error_shapes(string body, string expected) =>
+        Assert.Equal(expected, AzureTranscriber.ExtractDetail(body));
+
+    [Fact]
+    public void Unknown_json_shape_is_shown_shortened_and_empty_body_gives_nothing()
+    {
+        Assert.Null(AzureTranscriber.ExtractDetail(""));
+        var detail = AzureTranscriber.ExtractDetail("{\"x\":\"" + new string('a', 600) + "\"}")!;
+        Assert.True(detail.Length <= 301);
+        Assert.EndsWith("…", detail);
+    }
+
+    [Fact]
+    public async Task A_422_with_a_speech_style_body_shows_the_real_reason()
+    {
+        using var az = new FakeAzureServer { AlwaysStatus = 422, AlwaysBody = """{"code":"InvalidAudioFormat","message":"The audio format is not supported."}""" };
+        var dir = Path.Combine(Path.GetTempPath(), $"th_e_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var f = Path.Combine(dir, "a.mp4");
+            File.WriteAllBytes(f, new byte[100]);
+            var o = new TranscriptionOptions(az.Endpoint, "", "2024-11-15", "k", null, "it", TranscriptionProvider.Speech);
+            var ex = await Assert.ThrowsAsync<TranscriptionException>(() => new AzureTranscriber().TranscribeAsync(f, o));
+            Assert.Contains("422", ex.Message);
+            Assert.Contains("The audio format is not supported.", ex.Message);
+            Assert.Equal(1, az.Requests);   // 422: nessun nuovo tentativo inutile
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+}
