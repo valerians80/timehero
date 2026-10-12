@@ -26,6 +26,12 @@ public sealed class FakeAzureServer : IDisposable
     public int? AlwaysStatus { get; set; }
     public string? AlwaysBody { get; set; }
 
+    /// <summary>Speech: risponde 422 "audio non decodificabile" se la richiesta contiene la diarizzazione / le lingue.</summary>
+    public bool RejectSpeechDiarization { get; set; }
+    public bool RejectSpeechLocales { get; set; }
+    public List<string> SpeechDefinitions { get { lock (_lock) return _definitions.ToList(); } }
+    private readonly List<string> _definitions = new();
+
     public int Requests { get { lock (_lock) return _requests; } }
     public string? LastPath { get; private set; }
     public string? LastQuery { get; private set; }
@@ -89,7 +95,15 @@ public sealed class FakeAzureServer : IDisposable
             ? SpeechJson
             : $"{{\"text\":{System.Text.Json.JsonSerializer.Serialize(ResponseText)}}}";
 
-        if (AlwaysStatus is { } s) { status = s; body = AlwaysBody ?? "{}"; }
+        if (isSpeech)
+        {
+            var defStart = LastBodyText.IndexOf("{\"", StringComparison.Ordinal);
+            lock (_lock) _definitions.Add(defStart >= 0 ? LastBodyText[defStart..] : "");
+        }
+        const string undecodable = "{\"code\":\"UnprocessableEntity\",\"message\":\"The audio stream could not be decoded with the provided configuration.\"}";
+        if (isSpeech && RejectSpeechDiarization && LastBodyText.Contains("\"diarization\"")) { status = 422; body = undecodable; }
+        else if (isSpeech && RejectSpeechLocales && LastBodyText.Contains("\"locales\"")) { status = 422; body = undecodable; }
+        else if (AlwaysStatus is { } s) { status = s; body = AlwaysBody ?? "{}"; }
         else if (n <= FailFirst) { status = FailStatus; body = FailBody ?? "{}"; ctx.Response.AddHeader("Retry-After", "0"); }
         else if (RequiredApiKey is not null && givenKey != RequiredApiKey) { status = 401; body = "{\"error\":{\"message\":\"Access denied due to invalid subscription key.\"}}"; }
         else if (RequiredBearer is not null && LastAuthorization != "Bearer " + RequiredBearer) { status = 401; body = "{}"; }

@@ -84,19 +84,50 @@ public sealed class AzureTranscriber
             .ToArray();
     }
 
+    /// <summary>
+    /// Configurazioni di Azure AI Speech provate in ordine se il servizio risponde 422 ("audio non decodificabile
+    /// con la configurazione richiesta"): prima tutto, poi senza interlocutori, poi senza neppure la lingua.
+    /// </summary>
+    private static readonly (bool Diarization, bool Locales, string? Note)[] SpeechVariants =
+    {
+        (true, true, null),
+        (false, true, "Trascritto senza riconoscimento degli interlocutori: Azure non ha accettato la configurazione completa."),
+        (false, false, "Trascritto senza riconoscimento degli interlocutori e con lingua rilevata automaticamente: Azure non ha accettato la configurazione."),
+    };
+
     /// <summary>Invia il file e restituisce il testo. Riprova da sola su 429 e errori temporanei del server.</summary>
     public async Task<string> TranscribeAsync(string filePath, TranscriptionOptions o, string? prompt = null,
         CancellationToken ct = default)
     {
         if (!o.IsConfigured) throw new TranscriptionException("Trascrizione non configurata (endpoint, deployment, chiave).");
+        if (o.Provider != TranscriptionProvider.Speech) return await SendAsync(filePath, o, prompt, 0, ct);
 
+        TranscriptionException? last = null;
+        for (var i = 0; i < SpeechVariants.Length; i++)
+        {
+            try
+            {
+                var text = await SendAsync(filePath, o, prompt, i, ct);
+                return SpeechVariants[i].Note is { } note ? $"[{note}]{Environment.NewLine}{text}" : text;
+            }
+            catch (TranscriptionException ex) when ((int?)ex.Status == 422 && i < SpeechVariants.Length - 1)
+            {
+                last = ex; // configurazione non accettata: si prova la successiva, più semplice
+            }
+        }
+        throw last!; // non raggiungibile: l'ultimo tentativo o riesce o solleva
+    }
+
+    private async Task<string> SendAsync(string filePath, TranscriptionOptions o, string? prompt, int speechVariant,
+        CancellationToken ct)
+    {
         const int attempts = 3;
         for (var attempt = 1; ; attempt++)
         {
             HttpResponseMessage? resp = null;
             try
             {
-                using var req = await BuildRequestAsync(filePath, o, prompt, ct);
+                using var req = await BuildRequestAsync(filePath, o, prompt, speechVariant, ct);
                 resp = await _http.SendAsync(req, ct);
                 var body = await resp.Content.ReadAsStringAsync(ct);
 
@@ -133,7 +164,7 @@ public sealed class AzureTranscriber
     }
 
     private static async Task<HttpRequestMessage> BuildRequestAsync(string filePath, TranscriptionOptions o,
-        string? prompt, CancellationToken ct)
+        string? prompt, int speechVariant, CancellationToken ct)
     {
         var form = new MultipartFormDataContent();
         var file = new StreamContent(File.OpenRead(filePath));
@@ -143,12 +174,12 @@ public sealed class AzureTranscriber
         if (speech)
         {
             form.Add(file, "audio", Path.GetFileName(filePath));
-            var def = new Dictionary<string, object>
-            {
-                ["diarization"] = new Dictionary<string, object> { ["enabled"] = true, ["maxSpeakers"] = Math.Clamp(o.MaxSpeakers, 2, 35) },
-            };
+            var (useDiarization, useLocales, _) = SpeechVariants[Math.Clamp(speechVariant, 0, SpeechVariants.Length - 1)];
+            var def = new Dictionary<string, object>();
+            if (useDiarization)
+                def["diarization"] = new Dictionary<string, object> { ["enabled"] = true, ["maxSpeakers"] = Math.Clamp(o.MaxSpeakers, 2, 35) };
             var locales = SpeechLocales(o.Language);
-            if (locales.Length > 0) def["locales"] = locales;
+            if (useLocales && locales.Length > 0) def["locales"] = locales;
             form.Add(new StringContent(JsonSerializer.Serialize(def), System.Text.Encoding.UTF8, "application/json"), "definition");
         }
         else

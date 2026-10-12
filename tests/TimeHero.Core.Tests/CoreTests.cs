@@ -992,8 +992,92 @@ public class ErrorDetailTests
             var ex = await Assert.ThrowsAsync<TranscriptionException>(() => new AzureTranscriber().TranscribeAsync(f, o));
             Assert.Contains("422", ex.Message);
             Assert.Contains("The audio format is not supported.", ex.Message);
-            Assert.Equal(1, az.Requests);   // 422: nessun nuovo tentativo inutile
+            Assert.Equal(3, az.Requests);   // Speech: prova le 3 configurazioni prima di arrendersi
         }
         finally { Directory.Delete(dir, true); }
+    }
+}
+
+public class SpeechFallbackTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"th_fb_{Guid.NewGuid():N}");
+
+    public SpeechFallbackTests() => Directory.CreateDirectory(_dir);
+    public void Dispose() { try { Directory.Delete(_dir, true); } catch { /* ok */ } }
+
+    private string Audio()
+    {
+        var p = Path.Combine(_dir, "call.mp4");
+        File.WriteAllBytes(p, new byte[2048]);
+        return p;
+    }
+
+    private static TranscriptionOptions Speech(FakeAzureServer az) =>
+        new(az.Endpoint, "", "2024-11-15", "k", null, "it", TranscriptionProvider.Speech, 4);
+
+    private static AzureTranscriber Api() => new(null, TimeSpan.FromMilliseconds(30));
+
+    [Fact]
+    public async Task Full_configuration_is_tried_first_and_gives_no_note()
+    {
+        using var az = new FakeAzureServer();
+        var text = await Api().TranscribeAsync(Audio(), Speech(az));
+        Assert.Equal(1, az.Requests);
+        Assert.DoesNotContain("senza riconoscimento", text);
+        Assert.Contains("\"diarization\"", az.SpeechDefinitions[0]);
+        Assert.Contains("\"locales\"", az.SpeechDefinitions[0]);
+    }
+
+    [Fact]
+    public async Task Falls_back_to_no_diarization_when_azure_cannot_decode_with_it()
+    {
+        using var az = new FakeAzureServer { RejectSpeechDiarization = true };
+        var text = await Api().TranscribeAsync(Audio(), Speech(az));
+
+        Assert.Equal(2, az.Requests);
+        Assert.StartsWith("[Trascritto senza riconoscimento degli interlocutori", text);
+        Assert.DoesNotContain("\"diarization\"", az.SpeechDefinitions[1]);
+        Assert.Contains("\"locales\"", az.SpeechDefinitions[1]);   // la lingua resta
+    }
+
+    [Fact]
+    public async Task Falls_back_further_to_no_language_when_needed()
+    {
+        using var az = new FakeAzureServer { RejectSpeechDiarization = true, RejectSpeechLocales = true };
+        var text = await Api().TranscribeAsync(Audio(), Speech(az));
+
+        Assert.Equal(3, az.Requests);
+        Assert.Contains("lingua rilevata automaticamente", text);
+        Assert.DoesNotContain("\"locales\"", az.SpeechDefinitions[2]);
+    }
+
+    [Fact]
+    public async Task Gives_up_with_the_azure_reason_when_every_configuration_fails()
+    {
+        using var az = new FakeAzureServer
+        {
+            AlwaysStatus = 422,
+            AlwaysBody = """{"code":"UnprocessableEntity","message":"The audio stream could not be decoded with the provided configuration."}""",
+        };
+        var ex = await Assert.ThrowsAsync<TranscriptionException>(() => Api().TranscribeAsync(Audio(), Speech(az)));
+        Assert.Equal(3, az.Requests);
+        Assert.Contains("could not be decoded", ex.Message);
+    }
+
+    [Fact]
+    public async Task Other_errors_are_not_retried_with_different_configurations()
+    {
+        using var az = new FakeAzureServer { AlwaysStatus = 401, AlwaysBody = "{}" };
+        await Assert.ThrowsAsync<TranscriptionException>(() => Api().TranscribeAsync(Audio(), Speech(az)));
+        Assert.Equal(1, az.Requests);
+    }
+
+    [Fact]
+    public async Task OpenAi_provider_does_not_use_the_fallback_ladder()
+    {
+        using var az = new FakeAzureServer { AlwaysStatus = 422, AlwaysBody = "{}" };
+        var o = new TranscriptionOptions(az.Endpoint, "whisper", "2025-03-01-preview", "k");
+        await Assert.ThrowsAsync<TranscriptionException>(() => Api().TranscribeAsync(Audio(), o));
+        Assert.Equal(1, az.Requests);
     }
 }
