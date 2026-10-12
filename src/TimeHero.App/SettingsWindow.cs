@@ -198,7 +198,7 @@ public sealed class SettingsWindow : Window
         p.Children.Add(Ui.Field("Endpoint o Target URI (puoi incollare l'URI intero del deployment)", _azEndpoint));
         _azDeploymentField = Ui.Field("Nome del deployment (Whisper o gpt-4o-transcribe)", _azDeployment);
         p.Children.Add(_azDeploymentField);
-        _azSpeakersField = Ui.Field("Numero massimo di interlocutori (2–10)", _azSpeakers);
+        _azSpeakersField = Ui.Field("Numero massimo di interlocutori (2–35; più alto = call grandi, più basso = più preciso)", _azSpeakers);
         p.Children.Add(_azSpeakersField);
 
         var row = new Grid { Margin = new Thickness(0, 0, 0, 0) };
@@ -270,7 +270,7 @@ public sealed class SettingsWindow : Window
         st.AzureDeployment = deployment;
         st.AzureApiVersion = apiVersion;
         st.AzureProvider = _azProvider.SelectedIndex == 1 ? "speech" : "openai";
-        st.SpeechMaxSpeakers = int.TryParse(_azSpeakers.Text, out var spk) ? Math.Clamp(spk, 2, 10) : 4;
+        st.SpeechMaxSpeakers = int.TryParse(_azSpeakers.Text, out var spk) ? Math.Clamp(spk, 2, 35) : 4;
         _azSpeakers.Text = st.SpeechMaxSpeakers.ToString();
         st.AzureLanguage = _azLanguage.Text.Trim();
         var newAuth = _azAuth.SelectedIndex == 1 ? "entra" : "key";
