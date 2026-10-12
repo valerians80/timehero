@@ -172,6 +172,8 @@ public sealed class SettingsWindow : Window
         BorderBrush = Ui.Border, CaretBrush = Ui.Fg,
     };
     private readonly TextBox _azTenant = Ui.Input();
+    private readonly TextBox _ffmpegPath = Ui.Input();
+    private readonly TextBlock _ffmpegStatus = Ui.Text("", 10.5, fg: Ui.Subtle);
     private readonly CheckBox _azAuto = new() { Content = "Trascrivi in automatico appena finisce la registrazione", Margin = new Thickness(0, 10, 0, 0) };
     private readonly TextBlock _azResult = Ui.Text("", 11, fg: Ui.Subtle);
     private StackPanel _azKeyField = null!;
@@ -192,6 +194,7 @@ public sealed class SettingsWindow : Window
         _azKey.Password = st.AzureKey;
         _azTenant.Text = st.AzureTenant;
         _azAuto.IsChecked = st.AutoTranscribe;
+        _ffmpegPath.Text = st.FfmpegPath;
 
         var p = new StackPanel { Margin = new Thickness(14) };
         p.Children.Add(Ui.Field("Servizio di trascrizione", _azProvider));
@@ -223,6 +226,11 @@ public sealed class SettingsWindow : Window
         UpdateAzureFields();
         p.Children.Add(_azAuto);
 
+        p.Children.Add(Ui.Field("Percorso di ffmpeg (facoltativo: se vuoto lo cerco da solo)", _ffmpegPath));
+        _ffmpegStatus.Margin = new Thickness(2, 3, 0, 0);
+        p.Children.Add(_ffmpegStatus);
+        UpdateFfmpegStatus();
+
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 14, 0, 0) };
         buttons.Children.Add(Ui.Btn("Salva", (_, _) => SaveAzure(), Ui.Go));
         buttons.Children.Add(Ui.Btn("Prova connessione", async (_, _) => await TestAzureAsync(),
@@ -234,6 +242,7 @@ public sealed class SettingsWindow : Window
         var help = Ui.Text(
             "Cose da sapere:\n" +
             "• Formato: Azure accetta mp4, m4a, mp3, wav, webm… ma non mkv. In OBS imposta Registrazione → Formato: mp4 (o \"mp4 frammentato\").\n" +
+            "• Con ffmpeg installato TimeHero estrae da solo l'audio (mono, 48 kbps) prima dell'invio: file molto più piccolo e nel formato che Azure Speech accetta anche per le call lunghe.\n" +
             "• Dimensione: massimo 25 MB per file (circa 50 minuti a 64 kbps mono). Per chiamate più lunghe abbassa il bitrate " +
             "o metti in pausa a metà per ottenere due file.\n" +
             "• Azure AI Speech: trascrive file fino a circa 300 MB e separa gli interlocutori (\"Interlocutore 1/2…\"). " +
@@ -245,6 +254,22 @@ public sealed class SettingsWindow : Window
         p.Children.Add(help);
 
         return new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = p };
+    }
+
+    /// <summary>Dice se ffmpeg si trova: TimeHero lo usa per estrarre l'audio prima dell'invio ad Azure.</summary>
+    private void UpdateFfmpegStatus()
+    {
+        var found = FfmpegAudioPreparer.Find(_ffmpegPath.Text);
+        if (found is not null)
+        {
+            _ffmpegStatus.Foreground = Ui.Hex("#7BD88F");
+            _ffmpegStatus.Text = $"✔ ffmpeg trovato: {found}";
+        }
+        else
+        {
+            _ffmpegStatus.Foreground = Ui.Hex("#FFC857");
+            _ffmpegStatus.Text = "✖ ffmpeg non trovato. Installalo con:  winget install Gyan.FFmpeg  (consigliato: con file lunghi Azure può rifiutare l'audio originale).";
+        }
     }
 
     private void UpdateAzureFields()
@@ -279,6 +304,8 @@ public sealed class SettingsWindow : Window
         st.AzureKey = _azKey.Password;
         st.AzureTenant = _azTenant.Text.Trim();
         st.AutoTranscribe = _azAuto.IsChecked == true;
+        st.FfmpegPath = _ffmpegPath.Text.Trim();
+        UpdateFfmpegStatus();
     }
 
     private void SaveAzure()

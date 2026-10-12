@@ -53,6 +53,10 @@ public sealed class TranscriptionRunner
         Changed?.Invoke();
     }
 
+    /// <summary>Estrae l'audio con ffmpeg prima dell'invio (se è installato): Azure rifiuta gli m4a/mp4 lunghi con l'indice in fondo.</summary>
+    public IAudioPreparer? CreatePreparer() =>
+        FfmpegAudioPreparer.Find(_settings.FfmpegPath) is { } ffmpeg ? new FfmpegAudioPreparer(ffmpeg) : null;
+
     public TranscriptionOptions BuildOptions()
     {
         var (endpoint, deployment, apiVersion) = AzureEndpoint.Normalize(
@@ -86,7 +90,8 @@ public sealed class TranscriptionRunner
                     continue;
                 }
 
-                var t = await new TranscriptionService(store).TranscribeAsync(attachmentId, options);
+                var service = new TranscriptionService(store) { Preparer = CreatePreparer() };
+                var t = await service.TranscribeAsync(attachmentId, options);
                 var title = store.GetActivity(t.ActivityId)?.Title ?? "attività";
                 try
                 {

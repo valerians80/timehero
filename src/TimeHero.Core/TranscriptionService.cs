@@ -14,6 +14,12 @@ public sealed class TranscriptionService
     /// <summary>Limite di dimensione; se null si usa quello del servizio scelto.</summary>
     public long? MaxBytes { get; set; }
 
+    /// <summary>
+    /// Se presente (ffmpeg), estrae l'audio prima dell'invio: per Azure AI Speech sempre (i file lunghi con l'indice in fondo
+    /// vengono rifiutati), per Azure OpenAI quando il file è vicino al limite dei 25 MB.
+    /// </summary>
+    public IAudioPreparer? Preparer { get; set; }
+
     public TranscriptionService(TimeStore store, AzureTranscriber? api = null)
     {
         _store = store;
@@ -38,16 +44,48 @@ public sealed class TranscriptionService
             }
             else
             {
-                var size = new FileInfo(path).Length;
-                var limit = MaxBytes ?? options.MaxBytes;
-                if (size > limit)
+                string? prepNote = null;
+                PreparedAudio? prepared = null;
+                try
                 {
-                    error = $"File di {size / 1024.0 / 1024.0:0.#} MB: supera il limite di {limit / 1024 / 1024} MB. " +
-                            "Abbassa il bitrate audio in OBS o metti in pausa a metà chiamata per creare due file.";
+                    var sendPath = path;
+                    if (Preparer is not null && NeedsPreparation(path, options))
+                    {
+                        try
+                        {
+                            prepared = await Preparer.PrepareAsync(path, ct);
+                            sendPath = prepared.Path;
+                        }
+                        catch (TranscriptionException ex)
+                        {
+                            prepNote = ex.Message; // si prova comunque con il file originale
+                        }
+                    }
+
+                    var size = new FileInfo(sendPath).Length;
+                    var limit = MaxBytes ?? options.MaxBytes;
+                    if (size > limit)
+                    {
+                        error = $"File di {size / 1024.0 / 1024.0:0.#} MB: supera il limite di {limit / 1024 / 1024} MB. " +
+                                (Preparer is null
+                                    ? "Installa ffmpeg (winget install Gyan.FFmpeg): TimeHero estrae l'audio e il file diventa molto più piccolo."
+                                    : "Metti in pausa a metà chiamata per creare due file.");
+                    }
+                    else
+                    {
+                        try
+                        {
+                            text = await _api.TranscribeAsync(sendPath, options, BuildPrompt(att.ActivityId), ct);
+                        }
+                        catch (TranscriptionException ex)
+                        {
+                            error = ex.Message + HintFor(ex, options, prepNote, path);
+                        }
+                    }
                 }
-                else
+                finally
                 {
-                    text = await _api.TranscribeAsync(path, options, BuildPrompt(att.ActivityId), ct);
+                    prepared?.Dispose();
                 }
             }
         }
@@ -59,6 +97,24 @@ public sealed class TranscriptionService
         var id = _store.SaveTranscript(att.Id, att.ActivityId, options.ModelLabel, text,
             error is null ? "done" : "error", error);
         return _store.GetTranscript(id)!;
+    }
+
+    private bool NeedsPreparation(string path, TranscriptionOptions options)
+    {
+        if (options.Provider == TranscriptionProvider.Speech) return true;
+        return new FileInfo(path).Length > options.MaxBytes * 8 / 10;
+    }
+
+    /// <summary>Suggerimento da aggiungere agli errori che dipendono dal formato del file.</summary>
+    private string HintFor(TranscriptionException ex, TranscriptionOptions options, string? prepNote, string originalPath)
+    {
+        if (prepNote is not null)
+            return $" (Inoltre ffmpeg non è riuscito a preparare l'audio: {prepNote})";
+        var formatProblem = ex.Message.Contains("InvalidAudioFormat", StringComparison.OrdinalIgnoreCase)
+                            || ex.Message.Contains("could not be decoded", StringComparison.OrdinalIgnoreCase);
+        if (formatProblem && Preparer is null && options.Provider == TranscriptionProvider.Speech)
+            return " — Installa ffmpeg (winget install Gyan.FFmpeg): TimeHero lo usa per estrarre l'audio in un formato che Azure accetta.";
+        return "";
     }
 
     /// <summary>Contesto per il modello: aiuta a scrivere bene i nomi di clienti e persone.</summary>

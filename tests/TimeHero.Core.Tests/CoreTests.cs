@@ -1081,3 +1081,255 @@ public class SpeechFallbackTests : IDisposable
         Assert.Equal(1, az.Requests);
     }
 }
+
+public class AudioPreparerTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"th_ap_{Guid.NewGuid():N}");
+    private readonly string? _ffmpeg = FfmpegAudioPreparer.Find();
+
+    public AudioPreparerTests() => Directory.CreateDirectory(_dir);
+    public void Dispose() { try { Directory.Delete(_dir, true); } catch { /* ok */ } }
+
+    private static (int ExitCode, string Output) Run(string exe, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(exe)
+        { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        var err = p.StandardError.ReadToEndAsync();
+        var @out = p.StandardOutput.ReadToEnd();
+        p.WaitForExit();
+        return (p.ExitCode, @out + err.Result);
+    }
+
+    /// <summary>mp4 come quello di OBS: traccia video minuscola a 1 FPS + audio stereo, indice (moov) in fondo.</summary>
+    private string MakeObsLikeMp4()
+    {
+        var path = Path.Combine(_dir, "call.mp4");
+        var r = Run(_ffmpeg!, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=6:sample_rate=48000",
+            "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1:d=6",
+            "-ac", "2", "-c:a", "aac", "-b:a", "160k", "-c:v", "libx264", "-pix_fmt", "yuv420p", path);
+        Assert.True(r.ExitCode == 0, "ffmpeg non ha generato il file di prova: " + r.Output);
+        return path;
+    }
+
+    private static int IndexOf(string path, string atom)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var needle = System.Text.Encoding.ASCII.GetBytes(atom);
+        for (var i = 0; i <= bytes.Length - needle.Length; i++)
+            if (bytes.AsSpan(i, needle.Length).SequenceEqual(needle)) return i;
+        return -1;
+    }
+
+    [Fact]
+    public async Task Extracts_mono_audio_only_with_the_index_at_the_start()
+    {
+        if (_ffmpeg is null) return; // senza ffmpeg il test non ha senso
+        var src = MakeObsLikeMp4();
+        Assert.True(IndexOf(src, "mdat") < IndexOf(src, "moov"), "il file di prova dovrebbe avere l'indice in fondo");
+
+        using var prepared = await new FfmpegAudioPreparer(_ffmpeg).PrepareAsync(src);
+
+        Assert.EndsWith(".m4a", prepared.Path);
+        Assert.True(File.Exists(prepared.Path));
+        Assert.True(IndexOf(prepared.Path, "moov") < IndexOf(prepared.Path, "mdat"), "l'indice deve stare all'inizio (faststart)");
+
+        var info = Run(_ffmpeg, "-hide_banner", "-i", prepared.Path).Output;   // esce con 1 ma stampa i flussi
+        Assert.Contains("Audio: aac", info);
+        Assert.Contains("mono", info);
+        Assert.DoesNotContain("Video:", info);                                   // il video è stato tolto
+    }
+
+    [Fact]
+    public async Task Temporary_file_is_deleted_on_dispose_and_the_original_is_untouched()
+    {
+        if (_ffmpeg is null) return;
+        var src = MakeObsLikeMp4();
+        var before = new FileInfo(src).Length;
+
+        string tmp;
+        using (var prepared = await new FfmpegAudioPreparer(_ffmpeg).PrepareAsync(src))
+        {
+            tmp = prepared.Path;
+            Assert.True(File.Exists(tmp));
+        }
+        Assert.False(File.Exists(tmp));
+        Assert.Equal(before, new FileInfo(src).Length);
+    }
+
+    [Fact]
+    public async Task Reports_a_clear_error_when_ffmpeg_cannot_read_the_file()
+    {
+        if (_ffmpeg is null) return;
+        var junk = Path.Combine(_dir, "rotto.mp4");
+        File.WriteAllText(junk, "non sono un file audio");
+        var ex = await Assert.ThrowsAsync<TranscriptionException>(() => new FfmpegAudioPreparer(_ffmpeg).PrepareAsync(junk));
+        Assert.Contains("ffmpeg", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_missing_ffmpeg_executable_is_reported_not_thrown_as_a_raw_exception()
+    {
+        var ex = await Assert.ThrowsAsync<TranscriptionException>(() =>
+            new FfmpegAudioPreparer(Path.Combine(_dir, "non-esiste-ffmpeg")).PrepareAsync(Path.Combine(_dir, "x.mp4")));
+        Assert.Contains("ffmpeg", ex.Message);
+    }
+
+    [Fact]
+    public void Find_prefers_the_configured_path_and_returns_null_for_nonsense()
+    {
+        var fake = Path.Combine(_dir, OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg");
+        File.WriteAllText(fake, "x");
+        Assert.Equal(fake, FfmpegAudioPreparer.Find(fake));
+        Assert.Equal(fake, FfmpegAudioPreparer.Find(_dir));                      // anche indicando la cartella
+        Assert.NotEqual(Path.Combine(_dir, "nulla"), FfmpegAudioPreparer.Find(Path.Combine(_dir, "nulla")));
+    }
+}
+
+public class TranscriptionWithPreparerTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"th_tp_{Guid.NewGuid():N}");
+
+    public TranscriptionWithPreparerTests() => Directory.CreateDirectory(_dir);
+    public void Dispose() { try { Directory.Delete(_dir, true); } catch { /* ok */ } }
+
+    private sealed class FakePreparer : IAudioPreparer
+    {
+        private readonly string _dir;
+        public int Calls;
+        public bool Fail;
+        public FakePreparer(string dir) => _dir = dir;
+
+        public Task<PreparedAudio> PrepareAsync(string inputPath, CancellationToken ct = default)
+        {
+            Calls++;
+            if (Fail) throw new TranscriptionException("ffmpeg finto: errore");
+            var small = Path.Combine(_dir, $"prep_{Guid.NewGuid():N}.m4a");
+            File.WriteAllBytes(small, new byte[4096]);
+            return Task.FromResult(new PreparedAudio(small, temporary: true));
+        }
+    }
+
+    private (TimeStore Store, long AttachmentId) Setup(string name, long bytes)
+    {
+        var s = new TimeStore(Database.Open(":memory:"));
+        var a = new ActivityTracker(s).Start("Call", s.GetCategories().Single(c => c.Name == "Chiamate").Id);
+        var path = Path.Combine(_dir, name);
+        using (var fs = File.Create(path)) fs.SetLength(bytes);
+        return (s, s.AddAttachment(a.Id, path, "audio"));
+    }
+
+    private static TranscriptionService Svc(TimeStore s, IAudioPreparer? prep) =>
+        new(s, new AzureTranscriber(null, TimeSpan.FromMilliseconds(30)))
+        { FileWait = TimeSpan.FromSeconds(3), FilePoll = TimeSpan.FromMilliseconds(40), Preparer = prep };
+
+    private static TranscriptionOptions Speech(FakeAzureServer az) =>
+        new(az.Endpoint, "", "2024-11-15", "k", null, "it", TranscriptionProvider.Speech, 4);
+
+    [Fact]
+    public async Task Speech_always_sends_the_prepared_audio_and_not_the_original_recording()
+    {
+        using var az = new FakeAzureServer();
+        var (s, att) = Setup("registrazione.mp4", 60_000);
+        using var _ = s;
+        var prep = new FakePreparer(_dir);
+
+        var t = await Svc(s, prep).TranscribeAsync(att, Speech(az));
+
+        Assert.Equal("done", t.Status);
+        Assert.Equal(1, prep.Calls);
+        Assert.Contains(".m4a", az.LastBodyText);                  // il file inviato è quello preparato
+        Assert.DoesNotContain("registrazione.mp4", az.LastBodyText);
+    }
+
+    [Fact]
+    public async Task Prepared_audio_brings_a_big_recording_under_the_openai_limit()
+    {
+        using var az = new FakeAzureServer();
+        var (s, att) = Setup("grande.mp4", 30L * 1024 * 1024);     // 30 MB: oltre i 25 MB di Azure OpenAI
+        using var _ = s;
+        var prep = new FakePreparer(_dir);
+        var o = new TranscriptionOptions(az.Endpoint, "whisper", "2025-03-01-preview", "k");
+
+        var t = await Svc(s, prep).TranscribeAsync(att, o);
+
+        Assert.Equal("done", t.Status);
+        Assert.Equal(1, prep.Calls);
+    }
+
+    [Fact]
+    public async Task Small_recordings_are_not_converted_for_openai()
+    {
+        using var az = new FakeAzureServer();
+        var (s, att) = Setup("piccola.mp4", 100_000);
+        using var _ = s;
+        var prep = new FakePreparer(_dir);
+        var o = new TranscriptionOptions(az.Endpoint, "whisper", "2025-03-01-preview", "k");
+
+        var t = await Svc(s, prep).TranscribeAsync(att, o);
+
+        Assert.Equal("done", t.Status);
+        Assert.Equal(0, prep.Calls);
+        Assert.Contains("piccola.mp4", az.LastBodyText);
+    }
+
+    [Fact]
+    public async Task If_the_preparer_fails_the_original_is_tried_and_the_reason_is_added_to_a_failure()
+    {
+        using var az = new FakeAzureServer { AlwaysStatus = 422, AlwaysBody = """{"code":"UnprocessableEntity","innerError":{"code":"InvalidAudioFormat","message":"x"}}""" };
+        var (s, att) = Setup("registrazione.mp4", 60_000);
+        using var _ = s;
+        var prep = new FakePreparer(_dir) { Fail = true };
+
+        var t = await Svc(s, prep).TranscribeAsync(att, Speech(az));
+
+        Assert.Equal("error", t.Status);
+        Assert.Contains("ffmpeg finto: errore", t.Error);          // si spiega anche perché la preparazione è fallita
+        Assert.Contains("registrazione.mp4", az.LastBodyText);     // e si è provato con il file originale
+    }
+
+    [Fact]
+    public async Task Without_ffmpeg_a_format_error_suggests_installing_it()
+    {
+        using var az = new FakeAzureServer
+        {
+            AlwaysStatus = 422,
+            AlwaysBody = """{"code":"UnprocessableEntity","message":"The audio stream could not be decoded with the provided configuration.","innerError":{"code":"InvalidAudioFormat"}}""",
+        };
+        var (s, att) = Setup("registrazione.mp4", 60_000);
+        using var _ = s;
+
+        var t = await Svc(s, null).TranscribeAsync(att, Speech(az));
+
+        Assert.Equal("error", t.Status);
+        Assert.Contains("winget install Gyan.FFmpeg", t.Error);
+    }
+
+    [Fact]
+    public async Task Works_end_to_end_with_the_real_ffmpeg_and_the_fake_azure()
+    {
+        var ffmpeg = FfmpegAudioPreparer.Find();
+        if (ffmpeg is null) return;
+        using var az = new FakeAzureServer();
+        var src = Path.Combine(_dir, "obs.mp4");
+        var r = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ffmpeg,
+            $"-hide_banner -loglevel error -y -f lavfi -i sine=frequency=440:duration=4 -f lavfi -i color=c=black:s=64x64:r=1:d=4 -c:a aac -c:v libx264 -pix_fmt yuv420p \"{src}\"")
+        { UseShellExecute = false })!;
+        r.WaitForExit();
+        Assert.Equal(0, r.ExitCode);
+
+        var s = new TimeStore(Database.Open(":memory:"));
+        using var _ = s;
+        var a = new ActivityTracker(s).Start("Call", s.GetCategories().Single(c => c.Name == "Chiamate").Id);
+        var att = s.AddAttachment(a.Id, src, "audio");
+
+        var t = await Svc(s, new FfmpegAudioPreparer(ffmpeg)).TranscribeAsync(att, Speech(az));
+
+        Assert.Equal("done", t.Status);
+        Assert.Contains(".m4a", az.LastBodyText);                  // a Azure è arrivato l'audio estratto
+        Assert.Contains("ftypM4A", az.LastBodyText);               // ed è davvero un m4a
+        Assert.True(File.Exists(src));                             // l'originale è intatto
+    }
+}

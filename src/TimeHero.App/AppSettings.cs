@@ -59,6 +59,9 @@ public sealed class AppSettings
     public string AzureTenant { get => _store.GetSetting("azTenant") ?? ""; set => _store.SetSetting("azTenant", value); }
     public string AzureKey { get => Secret("azKey"); set => SetSecret("azKey", value); }
 
+    /// <summary>Percorso di ffmpeg (facoltativo): se vuoto lo cerco da solo (PATH, winget).</summary>
+    public string FfmpegPath { get => _store.GetSetting("ffmpegPath") ?? ""; set => _store.SetSetting("ffmpegPath", value); }
+
     /// <summary>Trascrivi da sola ogni registrazione appena finita.</summary>
     public bool AutoTranscribe { get => GetBool("autoTranscribe", true); set => SetBool("autoTranscribe", value); }
 
